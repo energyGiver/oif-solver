@@ -98,7 +98,59 @@ sequenceDiagram
 
 ---
 
-## 🛠️ 핵심 컴포넌트 분석
+## � End-to-end 플로우 ↔ 코드 매핑 (핵심 함수/파일)
+
+아래는 시퀀스 다이어그램의 각 단계가 실제 코드에서 어디에서 어떻게 구현되는지에 대한 빠른 참조입니다.
+
+- Intent 수신/검증/전략 결정: `crates/solver-core/src/handlers/intent.rs`
+    - Dedup 및 저장 슬롯 선점: `storage.exists` → `storage.store` with `StorageKey::Intents`
+    - 주문 생성/검증: `OrderService::validate_and_create_order` in `crates/solver-order/src/lib.rs`
+    - 비용 추정/수익성 검증:
+        - `CostProfitService::estimate_cost_for_order`
+        - `CostProfitService::validate_profitability` (임계값: `config.solver.min_profitability_pct`)
+    - 실행 컨텍스트 구성: `ContextBuilder::build_execution_context` in `crates/solver-core/src/engine/context.rs`
+    - 전략 판단: `OrderService::should_execute` → `ExecutionDecision::{Execute|Skip|Defer}`
+    - 이벤트 발행: `DiscoveryEvent::IntentValidated`, `OrderEvent::{Preparing|Skipped|Deferred}`
+
+- 준비/실행(Tx 생성·제출): `crates/solver-core/src/handlers/order.rs`
+    - 준비 트랜잭션 생성/제출: `OrderService::generate_prepare_transaction` → `DeliveryService::deliver`
+        - 상태/저장: `OrderStatus::Pending`, `StorageKey::OrderByTxHash` 역매핑 저장
+        - 이벤트: `DeliveryEvent::TransactionPending { tx_type: Prepare }`
+    - 실행(fill) 트랜잭션 생성/제출: `OrderService::generate_fill_transaction` → `DeliveryService::deliver`
+        - 상태/저장: `set_transaction_hash(.., TransactionType::Fill)` + 역매핑 저장
+        - 이벤트: `DeliveryEvent::TransactionPending { tx_type: Fill }`
+
+- Tx 확정 처리/상태 전이: `crates/solver-core/src/handlers/transaction.rs`
+    - Prepare 확정: `handle_prepare_confirmed` → `OrderStatus::Executing` → `OrderEvent::Executing`
+    - Fill 확정: `handle_fill_confirmed` → `OrderStatus::Executed` → `SettlementEvent::PostFillReady`
+    - PostFill 확정: `handle_post_fill_confirmed` → `OrderStatus::PostFilled` → `SettlementEvent::StartMonitoring { fill_tx_hash }`
+    - PreClaim 확정: `handle_pre_claim_confirmed` → `OrderStatus::PreClaimed` → `SettlementEvent::ClaimReady`
+    - Claim 확정: `handle_claim_confirmed` → `OrderStatus::Finalized` → `SettlementEvent::Completed`
+    - Settlement 특수 콜백: PostFill/PreClaim 시 `SettlementInterface::handle_transaction_confirmed`
+
+- 정산(Post-Fill/Pre-Claim/Claim): `crates/solver-core/src/handlers/settlement.rs`
+    - PostFill 준비: `SettlementHandler::handle_post_fill_ready`
+        - Fill receipt 조회: `DeliveryService::get_receipt`
+        - Tx 생성: `SettlementService::generate_post_fill_transaction` → 필요 시 `DeliveryService::deliver`
+    - 정산 모니터링 시작: `SettlementEvent::StartMonitoring` (또는 PostFill 생략 시 바로 시작)
+    - PreClaim 준비: `SettlementHandler::handle_pre_claim_ready`
+        - Tx 생성: `SettlementService::generate_pre_claim_transaction` → 필요 시 `DeliveryService::deliver`
+    - Claim 배치 처리: `SettlementHandler::process_claim_batch`
+        - 증빙: `order.fill_proof` → `OrderService::generate_claim_transaction` → `DeliveryService::deliver`
+
+- 정산 서비스/구현: `crates/solver-settlement/src/lib.rs`
+    - 증빙 생성: `SettlementService::get_attestation` → 각 구현의 `SettlementInterface::get_attestation`
+    - 청구 가능 여부: `SettlementService::can_claim`
+    - 구현 예: `implementations/{direct,hyperlane}.rs` (분쟁/전송/메시지 추적 등)
+
+- 트랜잭션 전달/체인데이터: `crates/solver-delivery/src/lib.rs`
+    - 제출: `DeliveryService::deliver`
+    - 확인/영수증: `confirm_with_default`, `get_receipt`
+    - 가스/밸런스/논스: `get_gas_price`, `get_balance`, `get_nonce`, `estimate_gas`
+
+---
+
+## �🛠️ 핵심 컴포넌트 분석
 
 ### 1. solver-types: 공통 타입 시스템
 
@@ -269,7 +321,117 @@ codegen-units = 1    # 단일 코드 생성 단위
 
 ---
 
-## 🔍 Discovery Service 상세 분석
+## � 수익성 계산과 검증 (Profitability)
+
+- 위치: `crates/solver-core/src/engine/cost_profit.rs`
+- 사용처: `crates/solver-core/src/handlers/intent.rs` 내 `IntentHandler::handle`
+
+핵심 흐름:
+- `estimate_cost_for_order(order, config)`
+    - 체인 파라미터 도출 → `estimate_gas_units` → 비용 컴포넌트 USD 환산 → `CostEstimate` 생성
+    - 가스 추정은 `DeliveryService::estimate_gas`와 가격 환산은 `PricingService` 활용
+- `calculate_profit_margin(order, &cost_estimate)`
+    - 입력 총액 USD − 출력 총액 USD − 운영비용 USD = Profit
+    - Margin = Profit / 입력 총액 USD × 100
+- `validate_profitability(order, &cost_estimate, min_profitability_pct)`
+    - `config.solver.min_profitability_pct`와 비교하여 미달 시 Skip 처리(`OrderEvent::Skipped`)
+
+구성 연결:
+- 최소 수익성 임계값: `config/*.toml` → `[solver].min_profitability_pct`
+- 가스/가격 경로: `DeliveryService`, `PricingService`, `TokenManager`
+
+---
+
+## 🧠 실행 전략 (Execution Strategy)
+
+- 위치: `crates/solver-order/src/implementations/strategies/simple.rs`
+- 인터페이스: `ExecutionStrategy` in `crates/solver-order/src/lib.rs`
+- 기본 구현: Simple 전략
+
+핵심 로직 요약:
+- `should_execute(order, context)`
+    - 컨텍스트의 체인별 gas_price 최대값이 전략의 한도(`max_gas_price_gwei`) 초과 시 Defer(60s)
+    - 출력 토큰별로 solver 보유 잔고 확인 (부족/정보없음 시 Skip 사유 반환)
+    - 조건 충족 시 Execute와 함께 `ExecutionParams { gas_price, priority_fee }` 리턴
+
+구성 연결:
+- `max_gas_price_gwei`: 전략 스키마 `SimpleStrategySchema`로 검증 → TOML에서 옵션으로 설정
+
+---
+
+## 🚚 Delivery Service: 트랜잭션 제출/조회
+
+- 위치: `crates/solver-delivery/src/lib.rs`
+- 인터페이스: `DeliveryInterface` (체인별 구현, EVM Alloy 등)
+- 서비스: `DeliveryService` (체인 ID → 구현 라우팅)
+
+주요 기능:
+- `deliver(tx)`: 체인별 구현을 선택해 서명/제출 → `TransactionHash`
+- `confirm/confirm_with_default`: 확인 대기 → `TransactionReceipt`
+- `get_receipt`, `get_status`: 영수증/상태 조회
+- `get_chain_data`: 현재 가스가격, 블록 넘버 등 가져오기
+- `estimate_gas`, `get_balance`, `get_nonce`, `get_allowance`: 실행/전략/원가 계산에 필요
+
+핸들러 사용 지점:
+- 준비/실행/정산 단계에서 생성된 트랜잭션을 `OrderHandler`/`SettlementHandler`가 제출
+- `TransactionHandler`와 모니터들이 확인/실패 이벤트를 기반으로 상태 전환
+
+---
+
+## 🤝 Settlement: Post-Fill, Pre-Claim, Claim
+
+- 위치: `crates/solver-core/src/handlers/settlement.rs`, `crates/solver-settlement/src/lib.rs`
+- 구현체 예: `crates/solver-settlement/src/implementations/{direct,hyperlane}.rs`
+
+핵심 인터페이스: `SettlementInterface`
+- `get_attestation(order, tx_hash)` → `FillProof`
+- `can_claim(order, fill_proof)` → bool
+- `generate_post_fill_transaction(order, fill_receipt)` → Option<Tx>
+- `generate_pre_claim_transaction(order, fill_proof)` → Option<Tx>
+- `handle_transaction_confirmed(order, tx_type, receipt)` → 구현별 영수증 처리(hyperlane 메시지 ID 등)
+
+핸들러 흐름:
+- PostFillReady → `DeliveryService::get_receipt` → `SettlementService::generate_post_fill_transaction` → 필요 시 제출
+- StartMonitoring → 정산 모니터가 `can_claim` 준비될 때까지 감시 → ClaimReady 발행
+- PreClaimReady → `SettlementService::generate_pre_claim_transaction` → 필요 시 제출
+- Claim 배치 → `OrderService::generate_claim_transaction` → 제출
+
+---
+
+## 🗃️ 상태/스토리지 매핑
+
+- 저장소 키: `solver_types::StorageKey::{Intents, Orders, OrderByTxHash}`
+- 저장 흐름 요약:
+    - Intent dedup: `StorageKey::Intents`
+    - Order FSM 저장/갱신: `OrderStateMachine::{store_order, set_transaction_hash, transition_order_status, update_order_with}`
+    - Tx 해시 → Order ID 역매핑: `StorageKey::OrderByTxHash` (hex 인코딩된 해시를 키로 사용)
+
+상태 전이 소스:
+- `TransactionHandler::{handle_*_confirmed, handle_failed}`
+- `OrderHandler::{handle_preparation, handle_execution}`
+- `SettlementHandler::{handle_post_fill_ready, handle_pre_claim_ready, process_claim_batch}`
+
+---
+
+## ⚙️ 설정 파일 위치와 주요 필드
+
+- 전역: `config/*.toml` 및 `config/{demo,testnet}/*.toml`
+- 핵심 필드 예시:
+    - `[solver]`
+        - `monitoring_timeout_minutes`: Tx/정산 모니터 타임아웃
+        - `min_profitability_pct`: 최소 수익성 임계값
+    - `[delivery.implementations.evm_alloy]`: 체인별 전달 구현/키/확인 수
+    - `[discovery.implementations.*]`: 온/오프체인 디스커버리 설정
+    - `[settlement.implementations.*]`: 정산 구현(예: direct, hyperlane), 오라클 라우트, 폴링 간격
+
+코드와의 연결:
+- `CostProfitService`에서 `min_profitability_pct` 사용
+- `SettlementService::new(poll_interval_seconds)`로 폴링 간격 주입
+- `DeliveryService::new(min_confirmations, poll_interval_seconds)`로 제출/확인 정책 주입
+
+---
+
+## �🔍 Discovery Service 상세 분석
 
 ### On-Chain Discovery (EIP-7683)
 

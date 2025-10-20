@@ -473,7 +473,7 @@ impl SolverEngine {
 
 	/// Returns a reference to the solver configuration.
 	///
-	/// Provides access to all configuration settings including network
+	/// Provides access to all configuration settings incl체uding network
 	/// parameters, timeouts, and service-specific settings.
 	pub fn config(&self) -> &Config {
 		&self.config
