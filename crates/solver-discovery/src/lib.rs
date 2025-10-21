@@ -18,6 +18,7 @@ pub mod implementations {
 	pub mod offchain {
 		pub mod _7683;
 	}
+	pub mod signet;
 }
 
 /// Errors that can occur during intent discovery operations.
@@ -97,7 +98,7 @@ pub trait DiscoveryRegistry: ImplementationRegistry<Factory = DiscoveryFactory> 
 /// Returns a vector of (name, factory) tuples for all available discovery implementations.
 /// This is used by the factory registry to automatically register all implementations.
 pub fn get_all_implementations() -> Vec<(&'static str, DiscoveryFactory)> {
-	use implementations::{offchain, onchain};
+	use implementations::{offchain, onchain, signet};
 
 	vec![
 		(
@@ -107,6 +108,10 @@ pub fn get_all_implementations() -> Vec<(&'static str, DiscoveryFactory)> {
 		(
 			offchain::_7683::Registry::NAME,
 			offchain::_7683::Registry::factory(),
+		),
+		(
+			signet::cache::Registry::NAME,
+			signet::cache::Registry::factory(),
 		),
 	]
 }
