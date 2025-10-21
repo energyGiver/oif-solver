@@ -225,6 +225,7 @@ impl TokenManager {
 			max_fee_per_gas: None,
 			max_priority_fee_per_gas: None,
 			nonce: None,
+			metadata: None,
 		};
 
 		let tx_hash = self.delivery.deliver(tx).await?;

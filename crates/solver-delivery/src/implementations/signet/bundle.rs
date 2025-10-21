@@ -14,9 +14,11 @@
 use crate::{DeliveryError, DeliveryInterface};
 use alloy_primitives::Bytes;
 use alloy_rpc_types::mev::EthSendBundle;
+use alloy_signer_local::PrivateKeySigner;
 use async_trait::async_trait;
 use signet_bundle::SignetEthBundle;
 use signet_tx_cache::client::TxCache;
+use signet_types::SignedFill;
 use solver_types::{
 	ConfigSchema, Field, FieldType, NetworksConfig, Schema, Transaction as SolverTransaction,
 	TransactionHash, TransactionReceipt,
@@ -32,6 +34,16 @@ pub struct SignetBundleConfig {
 	pub chain_name: String,
 	/// Target block number for bundles (optional, defaults to 1)
 	pub target_block: Option<u64>,
+	/// Rollup chain ID (L2)
+	pub rollup_chain_id: u64,
+	/// Host chain ID (L1) where fills are executed
+	pub host_chain_id: u64,
+	/// OrderOrigin contract address on L2
+	pub order_origin_address: alloy_primitives::Address,
+	/// OrderDestination contract address on L1
+	pub order_destination_address: alloy_primitives::Address,
+	/// Address where filler receives input tokens
+	pub filler_recipient: alloy_primitives::Address,
 }
 
 /// Signet bundle delivery implementation.
@@ -45,11 +57,18 @@ pub struct SignetBundleDelivery {
 	_networks: NetworksConfig,
 	/// Signet cache client
 	cache_client: Arc<TxCache>,
+	/// Solver's signer for creating SignedFills
+	#[allow(dead_code)] // Used in TODO: create_signed_fill implementation
+	signer: PrivateKeySigner,
 }
 
 impl SignetBundleDelivery {
 	/// Creates a new Signet bundle delivery instance.
-	pub fn new(config: SignetBundleConfig, networks: NetworksConfig) -> Result<Self, DeliveryError> {
+	pub fn new(
+		config: SignetBundleConfig,
+		networks: NetworksConfig,
+		signer: PrivateKeySigner,
+	) -> Result<Self, DeliveryError> {
 		// Validate chain name
 		if config.chain_name.is_empty() {
 			return Err(DeliveryError::Network("chain_name cannot be empty".to_string()));
@@ -70,38 +89,104 @@ impl SignetBundleDelivery {
 			config,
 			_networks: networks,
 			cache_client: Arc::new(cache_client),
+			signer,
 		})
 	}
 
-	/// Creates a bundle from a solver transaction.
+	/// Creates a bundle from a solver fill transaction.
 	///
-	/// This wraps the transaction in a SignetEthBundle with the transaction
-	/// as a host (L1) transaction.
-	fn create_bundle(&self, tx: &SolverTransaction) -> Result<SignetEthBundle, DeliveryError> {
-		// TODO: Properly encode the transaction
-		// For now, we create a simple bundle structure
+	/// Extracts the SignedOrder from transaction metadata and creates a proper
+	/// Signet bundle with the order initiation transaction and SignedFill.
+	async fn create_bundle(&self, tx: &SolverTransaction) -> Result<SignetEthBundle, DeliveryError> {
 		let target_block = self.config.target_block.unwrap_or(DEFAULT_BLOCK_NUMBER);
 
-		// Create empty bundle (no L2 txs for now)
-		let eth_send_bundle = EthSendBundle {
-			txs: vec![], // L2 transactions
-			block_number: target_block,
-			min_timestamp: None,
-			max_timestamp: None,
-			reverting_tx_hashes: vec![],
-			replacement_uuid: None,
-			..Default::default()
+		// Extract SignedOrder from transaction metadata
+		let signed_order = if let Some(metadata) = &tx.metadata {
+			// Deserialize SignedOrder from metadata
+			serde_json::from_value::<signet_types::SignedOrder>(metadata.clone()).map_err(|e| {
+				DeliveryError::Network(format!("Failed to deserialize SignedOrder from metadata: {}", e))
+			})?
+		} else {
+			// No metadata - this is not a Signet order, create empty bundle
+			tracing::warn!("No metadata in transaction, creating empty bundle");
+			return Ok(SignetEthBundle {
+				bundle: EthSendBundle {
+					txs: vec![],
+					block_number: target_block,
+					min_timestamp: None,
+					max_timestamp: None,
+					reverting_tx_hashes: vec![],
+					replacement_uuid: None,
+					..Default::default()
+				},
+				host_fills: None,
+				host_txs: vec![],
+			});
 		};
 
-		// Create host transaction bytes
-		// TODO: Properly encode the transaction as signed envelope
-		let host_tx_bytes = Bytes::from(tx.data.clone());
+		// Create initiate order transaction for L2
+		// This transaction calls OrderOrigin.initiatePermit2() with the SignedOrder
+		let initiate_tx_request = signed_order.to_initiate_tx(
+			self.config.filler_recipient,
+			self.config.order_origin_address,
+		);
 
-		Ok(SignetEthBundle {
-			bundle: eth_send_bundle,
-			host_fills: None, // TODO: Add proper fills when integrating with discovered orders
-			host_txs: vec![host_tx_bytes],
-		})
+		// Encode the transaction request as bytes
+		// For Signet bundles, we send the transaction request bytes (not a signed transaction)
+		let initiate_tx_bytes = Bytes::from(
+			initiate_tx_request
+				.input
+				.input
+				.map(|b| b.to_vec())
+				.unwrap_or_default(),
+		);
+
+		// Create SignedFill for host (L1) outputs
+		// The filler signs a permit2 approval for the tokens they will send
+		let host_fills = self.create_signed_fill(&signed_order).await?;
+
+		// Create bundle with order initiation transaction and signed fill
+		let bundle = SignetEthBundle {
+			bundle: EthSendBundle {
+				txs: vec![initiate_tx_bytes], // L2 transaction to initiate the order
+				block_number: target_block,
+				min_timestamp: None,
+				max_timestamp: None,
+				reverting_tx_hashes: vec![],
+				replacement_uuid: None,
+				..Default::default()
+			},
+			host_fills,
+			host_txs: vec![], // Empty as per signet-orders example
+		};
+
+		Ok(bundle)
+	}
+
+	/// Creates a SignedFill from the order's outputs.
+	///
+	/// The filler creates a permit2 signature authorizing the transfer of tokens
+	/// to fulfill the order's outputs on the host (L1) chain.
+	///
+	/// TODO: Implement full SignedFill creation using UnsignedFill pattern.
+	/// This requires converting the SignedOrder's outputs into an AggregateOrders
+	/// structure and using UnsignedFill::sign_for() to create the SignedFill.
+	/// For now, returns None to allow basic bundle submission without fills.
+	async fn create_signed_fill(
+		&self,
+		_signed_order: &signet_types::SignedOrder,
+	) -> Result<Option<SignedFill>, DeliveryError> {
+		// TODO: Implement SignedFill creation
+		// Steps required:
+		// 1. Filter outputs for host chain
+		// 2. Create AggregateOrders from the outputs
+		// 3. Use UnsignedFill::new(&agg_orders)
+		//    .with_ru_chain_id(rollup_chain_id)
+		//    .with_chain(host_chain_id, order_destination_address)
+		//    .sign_for(host_chain_id, &self.signer)
+		//
+		// For now, return None (bundle will have no host fills)
+		Ok(None)
 	}
 }
 
@@ -120,7 +205,14 @@ impl ConfigSchema for SignetBundleDeliverySchema {
 	fn validate(&self, config: &toml::Value) -> Result<(), solver_types::ValidationError> {
 		let schema = Schema::new(
 			// Required fields
-			vec![Field::new("chain_name", FieldType::String)],
+			vec![
+				Field::new("chain_name", FieldType::String),
+				Field::new("rollup_chain_id", FieldType::Integer { min: Some(1), max: None }),
+				Field::new("host_chain_id", FieldType::Integer { min: Some(1), max: None }),
+				Field::new("order_origin_address", FieldType::String),
+				Field::new("order_destination_address", FieldType::String),
+				Field::new("filler_recipient", FieldType::String),
+			],
 			// Optional fields
 			vec![Field::new("target_block", FieldType::Integer { min: Some(1), max: None })],
 		);
@@ -137,7 +229,7 @@ impl DeliveryInterface for SignetBundleDelivery {
 
 	async fn submit(&self, tx: SolverTransaction) -> Result<TransactionHash, DeliveryError> {
 		// Create bundle from transaction
-		let bundle = self.create_bundle(&tx)?;
+		let bundle = self.create_bundle(&tx).await?;
 
 		// Submit bundle to cache
 		let response = self
@@ -233,8 +325,8 @@ impl DeliveryInterface for SignetBundleDelivery {
 pub fn create_delivery(
 	config: &toml::Value,
 	networks: &NetworksConfig,
-	_default_private_key: &solver_types::SecretString,
-	_network_private_keys: &std::collections::HashMap<u64, solver_types::SecretString>,
+	default_private_key: &solver_types::SecretString,
+	network_private_keys: &std::collections::HashMap<u64, solver_types::SecretString>,
 ) -> Result<Box<dyn DeliveryInterface>, DeliveryError> {
 	// Validate configuration first
 	SignetBundleDeliverySchema::validate_config(config).map_err(|e| {
@@ -251,9 +343,66 @@ pub fn create_delivery(
 	// Parse target_block (optional)
 	let target_block = config.get("target_block").and_then(|v| v.as_integer()).map(|v| v as u64);
 
-	let delivery_config = SignetBundleConfig { chain_name, target_block };
+	// Parse rollup_chain_id (required)
+	let rollup_chain_id = config
+		.get("rollup_chain_id")
+		.and_then(|v| v.as_integer())
+		.ok_or_else(|| DeliveryError::Network("rollup_chain_id is required".to_string()))?
+		as u64;
 
-	let delivery = SignetBundleDelivery::new(delivery_config, networks.clone())?;
+	// Parse host_chain_id (required)
+	let host_chain_id = config
+		.get("host_chain_id")
+		.and_then(|v| v.as_integer())
+		.ok_or_else(|| DeliveryError::Network("host_chain_id is required".to_string()))?
+		as u64;
+
+	// Parse order_origin_address (required)
+	let order_origin_address = config
+		.get("order_origin_address")
+		.and_then(|v| v.as_str())
+		.ok_or_else(|| DeliveryError::Network("order_origin_address is required".to_string()))?
+		.parse::<alloy_primitives::Address>()
+		.map_err(|e| DeliveryError::Network(format!("Invalid order_origin_address: {}", e)))?;
+
+	// Parse order_destination_address (required)
+	let order_destination_address = config
+		.get("order_destination_address")
+		.and_then(|v| v.as_str())
+		.ok_or_else(|| DeliveryError::Network("order_destination_address is required".to_string()))?
+		.parse::<alloy_primitives::Address>()
+		.map_err(|e| DeliveryError::Network(format!("Invalid order_destination_address: {}", e)))?;
+
+	// Parse filler_recipient (required)
+	let filler_recipient = config
+		.get("filler_recipient")
+		.and_then(|v| v.as_str())
+		.ok_or_else(|| DeliveryError::Network("filler_recipient is required".to_string()))?
+		.parse::<alloy_primitives::Address>()
+		.map_err(|e| DeliveryError::Network(format!("Invalid filler_recipient: {}", e)))?;
+
+	// Create signer from private key
+	// Use host chain specific key if available, otherwise use default
+	let private_key = network_private_keys
+		.get(&host_chain_id)
+		.unwrap_or(default_private_key);
+
+	let signer = private_key
+		.expose_secret()
+		.parse::<PrivateKeySigner>()
+		.map_err(|e| DeliveryError::Network(format!("Invalid private key: {}", e)))?;
+
+	let delivery_config = SignetBundleConfig {
+		chain_name,
+		target_block,
+		rollup_chain_id,
+		host_chain_id,
+		order_origin_address,
+		order_destination_address,
+		filler_recipient,
+	};
+
+	let delivery = SignetBundleDelivery::new(delivery_config, networks.clone(), signer)?;
 	Ok(Box::new(delivery))
 }
 
@@ -281,13 +430,29 @@ mod tests {
 		NetworksConfigBuilder::new().build()
 	}
 
+	fn create_test_config() -> HashMap<&'static str, toml::Value> {
+		HashMap::from([
+			("chain_name", toml::Value::String("pecorino".to_string())),
+			("rollup_chain_id", toml::Value::Integer(901)),
+			("host_chain_id", toml::Value::Integer(1)),
+			(
+				"order_origin_address",
+				toml::Value::String("0x0000000000000000000000000000000000000001".to_string()),
+			),
+			(
+				"order_destination_address",
+				toml::Value::String("0x0000000000000000000000000000000000000002".to_string()),
+			),
+			(
+				"filler_recipient",
+				toml::Value::String("0x0000000000000000000000000000000000000003".to_string()),
+			),
+		])
+	}
+
 	#[test]
 	fn test_config_schema_validation_valid() {
-		let config = toml::Value::try_from(HashMap::from([(
-			"chain_name",
-			toml::Value::String("pecorino".to_string()),
-		)]))
-		.unwrap();
+		let config = toml::Value::try_from(create_test_config()).unwrap();
 
 		let result = SignetBundleDeliverySchema::validate_config(&config);
 		assert!(result.is_ok());
@@ -295,11 +460,9 @@ mod tests {
 
 	#[test]
 	fn test_config_schema_validation_with_target_block() {
-		let config = toml::Value::try_from(HashMap::from([
-			("chain_name", toml::Value::String("pecorino".to_string())),
-			("target_block", toml::Value::Integer(100)),
-		]))
-		.unwrap();
+		let mut config = create_test_config();
+		config.insert("target_block", toml::Value::Integer(100));
+		let config = toml::Value::try_from(config).unwrap();
 
 		let result = SignetBundleDeliverySchema::validate_config(&config);
 		assert!(result.is_ok());
@@ -307,11 +470,19 @@ mod tests {
 
 	#[test]
 	fn test_config_schema_validation_missing_chain_name() {
-		let config = toml::Value::try_from(HashMap::from([(
-			"target_block",
-			toml::Value::Integer(100),
-		)]))
-		.unwrap();
+		let mut config = create_test_config();
+		config.remove("chain_name");
+		let config = toml::Value::try_from(config).unwrap();
+
+		let result = SignetBundleDeliverySchema::validate_config(&config);
+		assert!(result.is_err());
+	}
+
+	#[test]
+	fn test_config_schema_validation_missing_required_field() {
+		let mut config = create_test_config();
+		config.remove("order_origin_address");
+		let config = toml::Value::try_from(config).unwrap();
 
 		let result = SignetBundleDeliverySchema::validate_config(&config);
 		assert!(result.is_err());
@@ -319,14 +490,12 @@ mod tests {
 
 	#[test]
 	fn test_create_delivery_valid() {
-		let config = toml::Value::try_from(HashMap::from([(
-			"chain_name",
-			toml::Value::String("pecorino".to_string()),
-		)]))
-		.unwrap();
+		let config = toml::Value::try_from(create_test_config()).unwrap();
 
 		let networks = create_test_networks();
-		let default_key = solver_types::SecretString::from("test_key");
+		// Use a valid hex private key for testing
+		let default_key =
+			solver_types::SecretString::from("0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80");
 		let network_keys = HashMap::new();
 
 		let result = create_delivery(&config, &networks, &default_key, &network_keys);

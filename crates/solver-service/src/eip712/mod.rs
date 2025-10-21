@@ -61,6 +61,7 @@ pub async fn get_domain_separator(
 		gas_price: None,
 		max_fee_per_gas: None,
 		max_priority_fee_per_gas: None,
+		metadata: None,
 	};
 
 	let result = delivery

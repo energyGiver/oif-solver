@@ -1231,6 +1231,7 @@ impl SettlementInterface for HyperlaneSettlement {
 			gas_price: None,
 			max_fee_per_gas: None,
 			max_priority_fee_per_gas: None,
+			metadata: None,
 		}))
 	}
 

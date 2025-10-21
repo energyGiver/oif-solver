@@ -430,6 +430,7 @@ async fn validate_intent_request(
 				max_priority_fee_per_gas: None,
 				nonce: None, // Will be set by delivery
 				chain_id,
+				metadata: None,
 			};
 
 			// Execute via DeliveryService

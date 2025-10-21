@@ -141,11 +141,18 @@ impl OrderHandler {
 		params: ExecutionParams,
 	) -> Result<(), OrderError> {
 		// Generate fill transaction
-		let tx = self
+		let mut tx = self
 			.order_service
 			.generate_fill_transaction(&order, &params)
 			.await
 			.map_err(|e| OrderError::Service(e.to_string()))?;
+
+		// For Signet orders (EIP-7683), attach order data as metadata
+		// This allows Signet delivery to reconstruct the SignedOrder for bundle creation
+		// The lock_type information is embedded in the order.data JSON
+		if order.standard == "eip7683" {
+			tx.metadata = Some(order.data.clone());
+		}
 
 		// Submit transaction
 		let tx_hash = self

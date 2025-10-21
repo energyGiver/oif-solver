@@ -515,6 +515,7 @@ impl CostProfitService {
 				.priority_fee
 				.map(|fee| fee.try_into().unwrap_or(u128::MAX)),
 			max_priority_fee_per_gas: None,
+			metadata: None,
 		})
 	}
 
@@ -547,6 +548,7 @@ impl CostProfitService {
 			nonce: None,
 			max_fee_per_gas: None,
 			max_priority_fee_per_gas: None,
+			metadata: None,
 		})
 	}
 

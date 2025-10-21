@@ -112,7 +112,7 @@ impl SignetCacheDiscovery {
 		Ok(Intent {
 			id,
 			source: "signet-cache".to_string(),
-			standard: "permit2".to_string(),
+			standard: "eip7683".to_string(), // EIP-7683 supports Permit2 via LockType
 			metadata: IntentMetadata {
 				requires_auction: false,
 				exclusive_until: None,
@@ -121,7 +121,7 @@ impl SignetCacheDiscovery {
 			data,
 			order_bytes: order_bytes.into(),
 			quote_id: None,
-			lock_type: "permit2".to_string(),
+			lock_type: "permit2".to_string(), // Permit2Escrow lock type
 		})
 	}
 
@@ -476,7 +476,7 @@ mod tests {
 		// Verify basic fields
 		assert_eq!(intent.id, "signet-12345");
 		assert_eq!(intent.source, "signet-cache");
-		assert_eq!(intent.standard, "permit2");
+		assert_eq!(intent.standard, "eip7683");
 		assert_eq!(intent.lock_type, "permit2");
 		assert!(!intent.metadata.requires_auction);
 		assert!(intent.metadata.exclusive_until.is_none());

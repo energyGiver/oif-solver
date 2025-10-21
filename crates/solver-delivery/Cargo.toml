@@ -16,12 +16,15 @@ alloy-sol-types = "1.0"
 alloy-transport = "1.0"
 alloy-transport-http = "1.0"
 async-trait = "0.1"
+chrono = "0.4"
 hex = "0.4"
 reqwest = "0.12"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 signet-bundle = { git = "https://github.com/init4tech/signet-sdk", branch = "main" }
 signet-tx-cache = { git = "https://github.com/init4tech/signet-sdk", branch = "main" }
+signet-types = { git = "https://github.com/init4tech/signet-sdk", branch = "main" }
+signet-zenith = { git = "https://github.com/init4tech/signet-sdk", branch = "main" }
 solver-account = { path = "../solver-account" }
 solver-types = { path = "../solver-types" }
 thiserror = "1.0"

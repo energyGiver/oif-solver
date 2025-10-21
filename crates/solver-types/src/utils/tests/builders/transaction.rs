@@ -280,6 +280,7 @@ impl TransactionBuilder {
 			gas_price: self.gas_price,
 			max_fee_per_gas: self.max_fee_per_gas,
 			max_priority_fee_per_gas: self.max_priority_fee_per_gas,
+			metadata: None,
 		})
 	}
 }

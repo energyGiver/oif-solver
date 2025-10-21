@@ -100,6 +100,10 @@ pub struct Transaction {
 	pub max_fee_per_gas: Option<u128>,
 	/// Maximum priority fee per gas (EIP-1559).
 	pub max_priority_fee_per_gas: Option<u128>,
+	/// Optional metadata for delivery-specific information.
+	/// Used by special delivery implementations (e.g., Signet bundles).
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub metadata: Option<serde_json::Value>,
 }
 
 /// Conversion from Alloy's TransactionRequest to our Transaction type.
@@ -118,6 +122,7 @@ impl From<TransactionRequest> for Transaction {
 			gas_price: req.gas_price,
 			max_fee_per_gas: req.max_fee_per_gas,
 			max_priority_fee_per_gas: req.max_priority_fee_per_gas,
+			metadata: None,
 		}
 	}
 }
