@@ -35,3 +35,4 @@ tracing = "0.1"
 
 [dev-dependencies]
 mockall = "0.13"
+signet-zenith = { git = "https://github.com/init4tech/signet-sdk", branch = "main" }
