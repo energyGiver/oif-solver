@@ -73,13 +73,12 @@ pub async fn get_domain_separator(
 		})?;
 
 	// Decode the result using ITheCompact DOMAIN_SEPARATOR response
-	let domain_separator = DOMAIN_SEPARATORCall::abi_decode_returns(&result, false)
+	let domain_separator = DOMAIN_SEPARATORCall::abi_decode_returns(&result)
 		.map_err(|e| APIError::BadRequest {
 			error_type: ApiErrorType::OrderValidationFailed,
 			message: format!("Failed to decode domain separator: {}", e),
 			details: None,
-		})?
-		._0;
+		})?;
 
 	Ok(domain_separator)
 }

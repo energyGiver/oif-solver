@@ -50,7 +50,7 @@ impl OrderSignatureValidator for Eip7683SignatureValidator {
 		delivery_service: &Arc<DeliveryService>,
 	) -> Result<(), APIError> {
 		// Parse order to get chain info
-		let standard_order = OifStandardOrder::abi_decode(&intent.order, true).map_err(|e| {
+		let standard_order = OifStandardOrder::abi_decode(&intent.order).map_err(|e| {
 			APIError::BadRequest {
 				error_type: ApiErrorType::OrderValidationFailed,
 				message: format!("Failed to decode order: {}", e),
