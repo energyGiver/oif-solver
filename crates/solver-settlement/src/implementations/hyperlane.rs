@@ -485,7 +485,7 @@ impl MessageTracker {
 		&self,
 		_order_id: &str,
 		_oracle_address: solver_types::Address,
-		_provider: &RootProvider<Http<reqwest::Client>>,
+		_provider: &RootProvider,
 	) -> Result<bool, SettlementError> {
 		// Hyperlane doesn't require explicit finalization
 		// Messages are automatically processed when they arrive at the destination
@@ -530,7 +530,7 @@ impl MessageTracker {
 /// Hyperlane settlement implementation
 #[allow(dead_code)]
 pub struct HyperlaneSettlement {
-	providers: HashMap<u64, RootProvider<Http<reqwest::Client>>>,
+	providers: HashMap<u64, RootProvider>,
 	oracle_config: OracleConfig,
 	mailbox_addresses: HashMap<u64, solver_types::Address>,
 	igp_addresses: HashMap<u64, solver_types::Address>,
@@ -603,7 +603,7 @@ impl HyperlaneSettlement {
 			..Default::default()
 		};
 
-		let result = provider.call(&request).await.map_err(|e| {
+		let result = provider.call(request).await.map_err(|e| {
 			SettlementError::ValidationFailed(format!("Failed to call isProven: {}", e))
 		})?;
 
@@ -886,7 +886,7 @@ impl HyperlaneSettlement {
 		};
 
 		// Make the eth_call to get the quote
-		let result = provider.call(&call_request).await.map_err(|e| {
+		let result = provider.call(call_request).await.map_err(|e| {
 			SettlementError::ValidationFailed(format!("Failed to quote gas payment: {}", e))
 		})?;
 
@@ -1043,7 +1043,6 @@ impl SettlementInterface for HyperlaneSettlement {
 		let block = provider
 			.get_block_by_number(
 				alloy_rpc_types::BlockNumberOrTag::Number(tx_block),
-				BlockTransactionsKind::Hashes,
 			)
 			.await
 			.map_err(|e| {

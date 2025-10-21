@@ -23,7 +23,7 @@ use std::collections::HashMap;
 /// and manages dispute periods before allowing claims.
 pub struct DirectSettlement {
 	/// RPC providers for each supported network.
-	providers: HashMap<u64, RootProvider<Http<reqwest::Client>>>,
+	providers: HashMap<u64, RootProvider>,
 	/// Oracle configuration including addresses and routes
 	oracle_config: OracleConfig,
 	/// Dispute period duration in seconds.
@@ -226,7 +226,6 @@ impl SettlementInterface for DirectSettlement {
 		let block = provider
 			.get_block_by_number(
 				alloy_rpc_types::BlockNumberOrTag::Number(tx_block),
-				BlockTransactionsKind::Hashes,
 			)
 			.await
 			.map_err(|e| {
@@ -267,7 +266,7 @@ impl SettlementInterface for DirectSettlement {
 		// Get current block to check timestamp
 		let current_block = match provider.get_block_number().await {
 			Ok(block_num) => match provider
-				.get_block_by_number(block_num.into(), BlockTransactionsKind::Hashes)
+				.get_block_by_number(block_num.into())
 				.await
 			{
 				Ok(Some(block)) => block,
