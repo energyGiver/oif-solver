@@ -126,14 +126,23 @@ impl SignetCacheDiscovery {
 	}
 
 	/// Checks if an order matches the whitelist.
-	fn matches_whitelist(_order: &SignedOrder, whitelist: &Option<Vec<String>>) -> bool {
+	fn matches_whitelist(order: &SignedOrder, whitelist: &Option<Vec<String>>) -> bool {
 		match whitelist {
 			None => true, // No whitelist = accept all
-			Some(_addresses) => {
-				// TODO: Implement whitelist filtering once we understand SignedOrder structure
-				// For now, accept all orders if whitelist is configured
-				tracing::warn!("Whitelist filtering is not yet implemented for Signet orders");
-				true
+			Some(addresses) => {
+				// Get the owner address from the order
+				let owner = order.permit.owner;
+
+				// Check if the owner is in the whitelist (case-insensitive comparison)
+				addresses.iter().any(|addr| {
+					// Parse whitelist address and compare
+					if let Ok(whitelist_addr) = addr.parse::<alloy_primitives::Address>() {
+						whitelist_addr == owner
+					} else {
+						tracing::warn!("Invalid address in whitelist: {}", addr);
+						false
+					}
+				})
 			},
 		}
 	}
@@ -425,5 +434,211 @@ mod tests {
 			<Registry as solver_types::ImplementationRegistry>::NAME,
 			"signet_cache"
 		);
+	}
+
+	// Helper function to create a test SignedOrder
+	fn create_test_order(owner: alloy_primitives::Address, nonce: u64) -> SignedOrder {
+		use alloy_primitives::{Signature, U256};
+		use signet_zenith::HostOrders::{PermitBatchTransferFrom, TokenPermissions};
+		use signet_zenith::RollupOrders::{Output, Permit2Batch};
+
+		SignedOrder::new(
+			Permit2Batch {
+				permit: PermitBatchTransferFrom {
+					permitted: vec![TokenPermissions {
+						token: alloy_primitives::Address::ZERO,
+						amount: U256::ZERO,
+					}],
+					nonce: U256::from(nonce),
+					deadline: U256::from(1000000000u64),
+				},
+				owner,
+				signature: Signature::test_signature().as_bytes().into(),
+			},
+			vec![Output {
+				token: alloy_primitives::Address::ZERO,
+				amount: U256::ZERO,
+				recipient: alloy_primitives::Address::ZERO,
+				chainId: 0,
+			}],
+		)
+	}
+
+	#[test]
+	fn test_order_to_intent_conversion() {
+		let test_address = "0x21c10426fa5101ab80042ac6cf89f65a7d9e7bcb"
+			.parse::<alloy_primitives::Address>()
+			.unwrap();
+		let order = create_test_order(test_address, 12345);
+
+		let intent = SignetCacheDiscovery::order_to_intent(&order).unwrap();
+
+		// Verify basic fields
+		assert_eq!(intent.id, "signet-12345");
+		assert_eq!(intent.source, "signet-cache");
+		assert_eq!(intent.standard, "permit2");
+		assert_eq!(intent.lock_type, "permit2");
+		assert!(!intent.metadata.requires_auction);
+		assert!(intent.metadata.exclusive_until.is_none());
+		assert!(intent.quote_id.is_none());
+
+		// Verify data can be deserialized back to SignedOrder
+		let deserialized: SignedOrder = serde_json::from_value(intent.data).unwrap();
+		assert_eq!(deserialized.permit.owner, test_address);
+		assert_eq!(deserialized.permit.permit.nonce, alloy_primitives::U256::from(12345));
+	}
+
+	#[test]
+	fn test_matches_whitelist_no_whitelist() {
+		let test_address = "0x21c10426fa5101ab80042ac6cf89f65a7d9e7bcb"
+			.parse::<alloy_primitives::Address>()
+			.unwrap();
+		let order = create_test_order(test_address, 1);
+
+		// No whitelist should accept all orders
+		assert!(SignetCacheDiscovery::matches_whitelist(&order, &None));
+	}
+
+	#[test]
+	fn test_matches_whitelist_matching_address() {
+		let test_address = "0x21c10426fa5101ab80042ac6cf89f65a7d9e7bcb"
+			.parse::<alloy_primitives::Address>()
+			.unwrap();
+		let order = create_test_order(test_address, 1);
+
+		let whitelist = Some(vec![
+			"0x21c10426fa5101ab80042ac6cf89f65a7d9e7bcb".to_string(),
+			"0x1234567890123456789012345678901234567890".to_string(),
+		]);
+
+		assert!(SignetCacheDiscovery::matches_whitelist(&order, &whitelist));
+	}
+
+	#[test]
+	fn test_matches_whitelist_case_insensitive() {
+		let test_address = "0x21c10426fa5101ab80042ac6cf89f65a7d9e7bcb"
+			.parse::<alloy_primitives::Address>()
+			.unwrap();
+		let order = create_test_order(test_address, 1);
+
+		// Test with uppercase address in whitelist
+		let whitelist = Some(vec!["0x21C10426FA5101AB80042AC6CF89F65A7D9E7BCB".to_string()]);
+
+		assert!(SignetCacheDiscovery::matches_whitelist(&order, &whitelist));
+	}
+
+	#[test]
+	fn test_matches_whitelist_non_matching_address() {
+		let test_address = "0x21c10426fa5101ab80042ac6cf89f65a7d9e7bcb"
+			.parse::<alloy_primitives::Address>()
+			.unwrap();
+		let order = create_test_order(test_address, 1);
+
+		let whitelist = Some(vec![
+			"0x1234567890123456789012345678901234567890".to_string(),
+			"0xabcdefabcdefabcdefabcdefabcdefabcdefabcd".to_string(),
+		]);
+
+		assert!(!SignetCacheDiscovery::matches_whitelist(&order, &whitelist));
+	}
+
+	#[test]
+	fn test_matches_whitelist_invalid_address() {
+		let test_address = "0x21c10426fa5101ab80042ac6cf89f65a7d9e7bcb"
+			.parse::<alloy_primitives::Address>()
+			.unwrap();
+		let order = create_test_order(test_address, 1);
+
+		// Whitelist with invalid address should not match
+		let whitelist = Some(vec!["invalid_address".to_string()]);
+
+		assert!(!SignetCacheDiscovery::matches_whitelist(&order, &whitelist));
+	}
+
+	#[test]
+	fn test_matches_whitelist_mixed_valid_invalid() {
+		let test_address = "0x21c10426fa5101ab80042ac6cf89f65a7d9e7bcb"
+			.parse::<alloy_primitives::Address>()
+			.unwrap();
+		let order = create_test_order(test_address, 1);
+
+		// Whitelist with one valid matching address and one invalid
+		let whitelist = Some(vec![
+			"invalid_address".to_string(),
+			"0x21c10426fa5101ab80042ac6cf89f65a7d9e7bcb".to_string(),
+		]);
+
+		assert!(SignetCacheDiscovery::matches_whitelist(&order, &whitelist));
+	}
+
+	#[test]
+	fn test_config_validation_invalid_polling_interval_zero() {
+		let config = toml::Value::try_from(HashMap::from([
+			("chain_name", toml::Value::String("pecorino".to_string())),
+			("polling_interval_secs", toml::Value::Integer(0)),
+		]))
+		.unwrap();
+
+		let result = SignetCacheDiscoverySchema::validate_config(&config);
+		assert!(result.is_err());
+	}
+
+	#[test]
+	fn test_config_validation_invalid_polling_interval_too_large() {
+		let config = toml::Value::try_from(HashMap::from([
+			("chain_name", toml::Value::String("pecorino".to_string())),
+			("polling_interval_secs", toml::Value::Integer(301)),
+		]))
+		.unwrap();
+
+		let result = SignetCacheDiscoverySchema::validate_config(&config);
+		assert!(result.is_err());
+	}
+
+	#[test]
+	fn test_new_discovery_validation_empty_chain_name() {
+		let config = SignetCacheConfig {
+			chain_name: "".to_string(),
+			polling_interval_secs: 5,
+			whitelist_addresses: None,
+		};
+
+		let networks = create_test_networks();
+		let result = SignetCacheDiscovery::new(config, networks);
+		assert!(result.is_err());
+	}
+
+	#[test]
+	fn test_new_discovery_validation_polling_interval_bounds() {
+		let networks = create_test_networks();
+
+		// Test zero interval
+		let config_zero = SignetCacheConfig {
+			chain_name: "pecorino".to_string(),
+			polling_interval_secs: 0,
+			whitelist_addresses: None,
+		};
+		assert!(SignetCacheDiscovery::new(config_zero, networks.clone()).is_err());
+
+		// Test too large interval
+		let config_large = SignetCacheConfig {
+			chain_name: "pecorino".to_string(),
+			polling_interval_secs: MAX_POLLING_INTERVAL_SECS + 1,
+			whitelist_addresses: None,
+		};
+		assert!(SignetCacheDiscovery::new(config_large, networks).is_err());
+	}
+
+	#[test]
+	fn test_create_discovery_with_default_polling_interval() {
+		let config = toml::Value::try_from(HashMap::from([(
+			"chain_name",
+			toml::Value::String("pecorino".to_string()),
+		)]))
+		.unwrap();
+
+		let networks = create_test_networks();
+		let result = create_discovery(&config, &networks);
+		assert!(result.is_ok());
 	}
 }
