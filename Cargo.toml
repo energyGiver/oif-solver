@@ -18,7 +18,7 @@ default-members = ["crates/solver-service"]
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.86.0"
+rust-version = "1.90.0"
 authors = [
     "nahim.terrazas@openzeppelin.com",
     "nami@openzeppelin.com",
