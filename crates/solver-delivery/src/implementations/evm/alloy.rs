@@ -29,7 +29,7 @@ use std::sync::Arc;
 /// and confirmation tracking. Supports multiple networks with a single instance.
 pub struct AlloyDelivery {
 	/// Alloy providers for each supported network.
-	providers: HashMap<u64, Arc<dyn Provider<Http<reqwest::Client>> + Send + Sync>>,
+	providers: HashMap<u64, Arc<dyn Provider + Send + Sync>>,
 }
 
 impl AlloyDelivery {
@@ -93,7 +93,7 @@ impl AlloyDelivery {
 
 			providers.insert(
 				*network_id,
-				Arc::new(provider) as Arc<dyn Provider<Http<reqwest::Client>> + Send + Sync>,
+				Arc::new(provider) as Arc<dyn Provider + Send + Sync>,
 			);
 		}
 
@@ -104,7 +104,7 @@ impl AlloyDelivery {
 	fn get_provider(
 		&self,
 		chain_id: u64,
-	) -> Result<&Arc<dyn Provider<Http<reqwest::Client>> + Send + Sync>, DeliveryError> {
+	) -> Result<&Arc<dyn Provider + Send + Sync>, DeliveryError> {
 		self.providers.get(&chain_id).ok_or_else(|| {
 			DeliveryError::Network(format!("No provider configured for chain ID {}", chain_id))
 		})
@@ -449,7 +449,7 @@ impl DeliveryInterface for AlloyDelivery {
 
 				let call_result = provider
 					.call(
-						&TransactionRequest::default()
+						TransactionRequest::default()
 							.to(token_addr)
 							.input(call_data.into()),
 					)
@@ -506,7 +506,7 @@ impl DeliveryInterface for AlloyDelivery {
 			.input(call_data.into());
 
 		let call_result = provider
-			.call(&call_request)
+			.call(call_request)
 			.await
 			.map_err(|e| DeliveryError::Network(format!("Failed to call allowance: {}", e)))?;
 
@@ -554,7 +554,7 @@ impl DeliveryInterface for AlloyDelivery {
 		// The provider with wallet will automatically handle setting the `from` field
 		// when needed for gas estimation
 		let gas = provider
-			.estimate_gas(&request)
+			.estimate_gas(request)
 			.await
 			.map_err(|e| DeliveryError::Network(format!("Failed to estimate gas: {}", e)))?;
 		Ok(gas)
@@ -572,7 +572,7 @@ impl DeliveryInterface for AlloyDelivery {
 
 		// Execute the call without submitting a transaction
 		let result = provider
-			.call(&request)
+			.call(request)
 			.await
 			.map_err(|e| DeliveryError::Network(format!("Failed to execute eth_call: {}", e)))?;
 
