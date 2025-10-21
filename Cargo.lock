@@ -5243,6 +5243,8 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "signet-bundle",
+ "signet-tx-cache",
  "solver-account",
  "solver-types",
  "thiserror 1.0.69",
