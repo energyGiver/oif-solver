@@ -66,9 +66,9 @@ const MAX_POLLING_INTERVAL_SECS: u64 = 300;
 /// Provider types for different transport modes.
 enum ProviderType {
 	/// HTTP provider for polling mode.
-	Http(RootProvider<Http<reqwest::Client>>),
+	Http(RootProvider),
 	/// WebSocket provider for subscription mode.
-	WebSocket(RootProvider<PubSubFrontend>),
+	WebSocket(RootProvider),
 }
 
 /// EIP-7683 on-chain discovery implementation.
@@ -146,7 +146,6 @@ impl Eip7683Discovery {
 
 				let ws_connect = WsConnect::new(ws_url.to_string());
 				let provider = ProviderBuilder::new()
-					.with_recommended_fillers()
 					.on_ws(ws_connect)
 					.await
 					.map_err(|e| {
@@ -210,7 +209,7 @@ impl Eip7683Discovery {
 		};
 
 		// Decode the Open event
-		let open_event = Open::decode_log(&prim_log, true).map_err(|e| {
+		let open_event = Open::decode_log(&prim_log).map_err(|e| {
 			DiscoveryError::ParseError(format!("Failed to decode Open event: {}", e))
 		})?;
 
@@ -298,7 +297,7 @@ impl Eip7683Discovery {
 	/// Periodically polls the blockchain for new Open events and sends
 	/// discovered intents through the provided channel.
 	async fn monitor_chain_polling(
-		provider: RootProvider<Http<reqwest::Client>>,
+		provider: RootProvider,
 		chain_id: u64,
 		networks: NetworksConfig,
 		last_blocks: Arc<Mutex<HashMap<u64, u64>>>,
@@ -388,7 +387,7 @@ impl Eip7683Discovery {
 	/// Uses WebSocket connection to subscribe to Open events via eth_subscribe
 	/// and processes events as they arrive in real-time.
 	async fn monitor_chain_subscription(
-		provider: RootProvider<PubSubFrontend>,
+		provider: RootProvider,
 		chain_id: u64,
 		networks: NetworksConfig,
 		sender: mpsc::UnboundedSender<Intent>,
@@ -1101,7 +1100,7 @@ mod tests {
 		let encoded = standard_order.abi_encode();
 		assert!(!encoded.is_empty());
 
-		let decoded = StandardOrder::abi_decode(&encoded, true).unwrap();
+		let decoded = StandardOrder::abi_decode(&encoded).unwrap();
 		assert_eq!(decoded.nonce, standard_order.nonce);
 		assert_eq!(decoded.outputs.len(), standard_order.outputs.len());
 	}
