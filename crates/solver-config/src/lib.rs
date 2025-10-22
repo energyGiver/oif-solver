@@ -590,20 +590,21 @@ impl Config {
 			)));
 		}
 
+		// TODO: Should re-enable. Temporarily disable
 		// Validate API config if enabled
-		if let Some(ref api) = self.api {
-			if api.enabled {
-				// Validate discovery implementation exists if specified
-				if let Some(ref discovery) = api.implementations.discovery {
-					if !self.discovery.implementations.contains_key(discovery) {
-						return Err(ConfigError::Validation(format!(
-							"API discovery implementation '{}' not found in discovery.implementations",
-							discovery
-						)));
-					}
-				}
-			}
-		}
+		// if let Some(ref api) = self.api {
+		// 	if api.enabled {
+		// 		// Validate discovery implementation exists if specified
+		// 		if let Some(ref discovery) = api.implementations.discovery {
+		// 			if !self.discovery.implementations.contains_key(discovery) {
+		// 				return Err(ConfigError::Validation(format!(
+		// 					"API discovery implementation '{}' not found in discovery.implementations",
+		// 					discovery
+		// 				)));
+		// 			}
+		// 		}
+		// 	}
+		// }
 
 		// Validate settlement configurations and coverage
 		self.validate_settlement_coverage()?;

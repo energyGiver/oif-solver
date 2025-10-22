@@ -44,3 +44,53 @@ decimals = 18
 address = "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512"
 symbol = "TOKB"
 decimals = 18
+
+# ============================================================================
+# SIGNET PECORINO NETWORKS
+# ============================================================================
+
+# Pecorino Rollup (L2) - Chain ID: 14174
+[networks.14174]
+input_settler_address = "0x000000000000007369676E65742D6f7264657273"
+output_settler_address = "0x000000000000007369676E65742D6f7264657273"
+
+[[networks.14174.rpc_urls]]
+http = "https://rpc.pecorino.signet.sh/"
+
+[[networks.14174.tokens]]
+address = "0x0000000000000000007369676e65742D77627463"
+symbol = "WBTC"
+decimals = 8
+
+[[networks.14174.tokens]]
+address = "0x0000000000000000007369676e65742d77657468"
+symbol = "WETH"
+decimals = 18
+
+# Pecorino Host (L1) - Chain ID: 3151908
+[networks.3151908]
+input_settler_address = "0x0A4f505364De0Aa46c66b15aBae44eBa12ab0380"
+output_settler_address = "0x0A4f505364De0Aa46c66b15aBae44eBa12ab0380"
+
+[[networks.3151908.rpc_urls]]
+http = "https://rpc.pecorino-host.signet.sh/"  # TODO: Verify actual L1 RPC endpoint
+
+[[networks.3151908.tokens]]
+address = "0x65fb255585458de1f9a246b476aa8d5c5516f6fd"
+symbol = "USDC"
+decimals = 6
+
+[[networks.3151908.tokens]]
+address = "0xb9df1b911b6cf6935b2a918ba03df2372e94e267"
+symbol = "USDT"
+decimals = 6
+
+[[networks.3151908.tokens]]
+address = "0xfb29f7d7a4ce607d6038d44150315e5f69bea08a"
+symbol = "WBTC"
+decimals = 8
+
+[[networks.3151908.tokens]]
+address = "0xd03d085B78067A18155d3B29D64914df3D19A53C"
+symbol = "WETH"
+decimals = 18

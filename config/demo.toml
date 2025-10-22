@@ -35,7 +35,8 @@ ttl_order_by_tx_hash = 300      # 5 minutes
 primary = "local"
 
 [account.implementations.local]
-private_key = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+# Signet Pecorino Signer Key
+private_key = "0x16bbae6ef31163943147e8bffe6608493c94d2ae9922488942926a608a0e1930"
 
 # ============================================================================
 # DELIVERY
@@ -46,19 +47,36 @@ min_confirmations = 1
 [delivery.implementations.evm_alloy]
 network_ids = [31337, 31338]
 
+# Signet Pecorino Bundle Delivery
+[delivery.implementations.signet_bundle]
+network_ids = [14174, 3151908]  # Pecorino Rollup and Host chains
+chain_name = "pecorino"
+rollup_chain_id = 14174
+host_chain_id = 3151908
+order_origin_address = "0x000000000000007369676E65742D6f7264657273"
+order_destination_address = "0x0A4f505364De0Aa46c66b15aBae44eBa12ab0380"
+filler_recipient = "0x21c10426fa5101ab80042ac6cf89f65a7d9e7bcb"
+
 # ============================================================================
 # DISCOVERY
 # ============================================================================
 [discovery]
 
-[discovery.implementations.onchain_eip7683]
-network_ids = [31337, 31338]
-polling_interval_secs = 0    # Use WebSocket subscriptions instead of polling
+# Disabled local chain discovery (only using Signet)
+# [discovery.implementations.onchain_eip7683]
+# network_ids = [31337, 31338]
+# polling_interval_secs = 0    # Use WebSocket subscriptions instead of polling
 
-[discovery.implementations.offchain_eip7683]
-api_host = "127.0.0.1"
-api_port = 8081
-network_ids = [31337]
+# [discovery.implementations.offchain_eip7683]
+# api_host = "127.0.0.1"
+# api_port = 8081
+# network_ids = [31337]
+
+# Signet Pecorino Discovery
+[discovery.implementations.signet_cache]
+chain_name = "pecorino"
+polling_interval_secs = 5
+whitelist = ["0x21c10426fa5101ab80042ac6cf89f65a7d9e7bcb"]
 
 # ============================================================================
 # ORDER
