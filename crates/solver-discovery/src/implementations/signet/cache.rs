@@ -100,19 +100,20 @@ impl SignetCacheDiscovery {
 			order.permit.permit.nonce
 		);
 
-		// Create intent with Permit2 data
+		// Create intent with Permit2 data (SignedOrder)
 		let data = serde_json::to_value(order).map_err(|e| {
 			DiscoveryError::ParseError(format!("Failed to serialize order: {}", e))
 		})?;
 
-		// Encode order bytes
+		// Store SignedOrder JSON as order_bytes
+		// The Signet order implementation will extract it from intent_data
 		let order_bytes = serde_json::to_vec(order)
 			.map_err(|e| DiscoveryError::ParseError(format!("Failed to encode order: {}", e)))?;
 
 		Ok(Intent {
 			id,
 			source: "signet-cache".to_string(),
-			standard: "eip7683".to_string(), // EIP-7683 supports Permit2 via LockType
+			standard: "signet".to_string(), // Use Signet standard (not eip7683)
 			metadata: IntentMetadata {
 				requires_auction: false,
 				exclusive_until: None,
@@ -121,7 +122,7 @@ impl SignetCacheDiscovery {
 			data,
 			order_bytes: order_bytes.into(),
 			quote_id: None,
-			lock_type: "permit2".to_string(), // Permit2Escrow lock type
+			lock_type: "permit2_escrow".to_string(), // Use proper LockType format
 		})
 	}
 

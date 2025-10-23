@@ -18,6 +18,7 @@ use thiserror::Error;
 pub mod implementations {
 	pub mod standards {
 		pub mod _7683;
+		pub mod signet;
 	}
 	pub mod strategies {
 		pub mod simple;
@@ -189,8 +190,12 @@ pub trait StrategyRegistry: ImplementationRegistry<Factory = StrategyFactory> {}
 /// This is used by the factory registry to automatically register all implementations.
 pub fn get_all_order_implementations() -> Vec<(&'static str, OrderFactory)> {
 	use implementations::standards::_7683;
+	use implementations::standards::signet;
 
-	vec![(_7683::Registry::NAME, _7683::Registry::factory())]
+	vec![
+		(_7683::Registry::NAME, _7683::Registry::factory()),
+		(signet::Registry::NAME, signet::Registry::factory()),
+	]
 }
 
 /// Get all registered strategy implementations.
