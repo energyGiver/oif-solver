@@ -81,69 +81,79 @@ impl ExecutionStrategy for SimpleStrategy {
 				let outputs = parsed_order.parse_requested_outputs();
 
 				// Check each output to ensure we have sufficient balance
-				for output in &outputs {
-					// Get chain ID from the asset's InteropAddress
-					let chain_id = output.asset.ethereum_chain_id().unwrap_or_else(|_| {
-						tracing::warn!(
-							order_id = %order.id,
-							"Failed to get chain ID from asset, defaulting to 1"
-						);
-						1u64
-					});
+				// Skip balance checks for Signet orders since they use bundle delivery
+				let is_signet_order = order.standard == "signet";
 
-					// Get token address from the asset's InteropAddress
-					let token_address = output
-						.asset
-						.ethereum_address()
-						.map(|addr| hex::encode(addr.as_slice()))
-						.unwrap_or_else(|e| {
+				if is_signet_order {
+					tracing::debug!(
+						order_id = %order.id,
+						"Skipping balance checks for Signet order (uses bundle delivery with Permit2)"
+					);
+				} else {
+					for output in &outputs {
+						// Get chain ID from the asset's InteropAddress
+						let chain_id = output.asset.ethereum_chain_id().unwrap_or_else(|_| {
 							tracing::warn!(
 								order_id = %order.id,
-								error = %e,
-								"Failed to get token address from asset"
+								"Failed to get chain ID from asset, defaulting to 1"
 							);
-							String::new()
+							1u64
 						});
 
-					// Build the balance key (chain_id, Some(token_address))
-					let balance_key = (chain_id, Some(token_address.clone()));
+						// Get token address from the asset's InteropAddress
+						let token_address = output
+							.asset
+							.ethereum_address()
+							.map(|addr| hex::encode(addr.as_slice()))
+							.unwrap_or_else(|e| {
+								tracing::warn!(
+									order_id = %order.id,
+									error = %e,
+									"Failed to get token address from asset"
+								);
+								String::new()
+							});
 
-					// Check if we have the balance for this token
-					if let Some(balance_str) = context.solver_balances.get(&balance_key) {
-						// Parse balance and required amount
-						let balance = balance_str.parse::<U256>().unwrap_or(U256::ZERO);
-						let required = output.amount;
+						// Build the balance key (chain_id, Some(token_address))
+						let balance_key = (chain_id, Some(token_address.clone()));
 
-						if balance < required {
+						// Check if we have the balance for this token
+						if let Some(balance_str) = context.solver_balances.get(&balance_key) {
+							// Parse balance and required amount
+							let balance = balance_str.parse::<U256>().unwrap_or(U256::ZERO);
+							let required = output.amount;
+
+							if balance < required {
+								tracing::warn!(
+									order_id = %order.id,
+									chain_id = chain_id,
+									token = %with_0x_prefix(&token_address),
+									balance = ?balance,
+									required = ?required,
+									"Insufficient token balance for order"
+								);
+								return ExecutionDecision::Skip(format!(
+									"Insufficient balance on chain {}: have {} need {} of token {}",
+									chain_id,
+									balance,
+									required,
+									with_0x_prefix(&token_address)
+								));
+							}
+						} else {
+							// No balance info available for this token
 							tracing::warn!(
 								order_id = %order.id,
 								chain_id = chain_id,
 								token = %with_0x_prefix(&token_address),
-								balance = ?balance,
-								required = ?required,
-								"Insufficient token balance for order"
+								"No balance information available for token"
 							);
 							return ExecutionDecision::Skip(format!(
-								"Insufficient balance on chain {}: have {} need {} of token {}",
-								chain_id,
-								balance,
-								required,
-								with_0x_prefix(&token_address)
+								"No balance information for token {} on chain {}",
+								with_0x_prefix(&token_address),
+								chain_id
 							));
 						}
-					} else {
-						// No balance info available for this token
-						tracing::warn!(
-							order_id = %order.id,
-							chain_id = chain_id,
-							token = %with_0x_prefix(&token_address),
-							"No balance information available for token"
-						);
-						return ExecutionDecision::Skip(format!(
-							"No balance information for token {} on chain {}",
-							with_0x_prefix(&token_address),
-							chain_id
-						));
 					}
 				}
 			},

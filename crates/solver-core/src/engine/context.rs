@@ -103,6 +103,7 @@ impl ContextBuilder {
 
 		match intent.standard.as_str() {
 			"eip7683" => self.extract_eip7683_chains(&intent.data),
+			"signet" => self.extract_signet_chains(&intent.data),
 			_ => {
 				tracing::warn!(
 					standard = %intent.standard,
@@ -180,6 +181,53 @@ impl ContextBuilder {
 				"No chains found in EIP-7683 specific fields".to_string(),
 			));
 		}
+
+		Ok(chains)
+	}
+
+	/// Extracts chain IDs from Signet intent data.
+	///
+	/// Signet intent data contains a SignedOrder JSON which includes:
+	/// - Input chains: derived from permit.permit.permitted (implicitly same chain)
+	/// - Output chains: found in outputs[].chainId
+	fn extract_signet_chains(&self, data: &serde_json::Value) -> Result<Vec<u64>, SolverError> {
+		let mut chains = Vec::new();
+
+		tracing::debug!("Extracting chains from Signet order data");
+
+		// The intent data for Signet contains the full SignedOrder
+		// Extract output chain IDs from outputs array
+		if let Some(outputs) = data.get("outputs").and_then(|v| v.as_array()) {
+			for output in outputs.iter() {
+				// Signet outputs use "chainId" field (capital I)
+				if let Some(chain_id) = output.get("chainId").and_then(|v| v.as_u64()) {
+					chains.push(chain_id);
+					tracing::debug!(chain_id = chain_id, "Found output chain from Signet order");
+				}
+			}
+		}
+
+		// Signet orders typically have inputs on the same chain as one of the outputs
+		// or on a specific rollup chain. We can use config defaults (14174 for Pecorino rollup)
+		// or check if there's an explicit input chain field.
+		// For now, we'll use the output chains as the comprehensive list.
+
+		// If we found no chains, fall back to default Signet chains
+		if chains.is_empty() {
+			tracing::warn!("No output chains found in Signet order, using default chains");
+			// Default Pecorino chains: rollup (14174) and host (3151908)
+			chains.push(14174);
+			chains.push(3151908);
+		}
+
+		// Remove duplicates and sort
+		chains.sort_unstable();
+		chains.dedup();
+
+		tracing::info!(
+			chains = ?chains,
+			"Extracted chains from Signet order"
+		);
 
 		Ok(chains)
 	}
