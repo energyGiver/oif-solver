@@ -629,16 +629,39 @@ impl Config {
 
 		// Parse and validate each settlement implementation
 		for (impl_name, impl_config) in &self.settlement.implementations {
-			// Extract standard field
-			let order_standard = impl_config
+			// Extract standard field(s) - can be a string or array of strings
+			let order_value = impl_config
 				.get("order")
-				.and_then(|v| v.as_str())
 				.ok_or_else(|| {
 					ConfigError::Validation(format!(
 						"Settlement implementation '{}' missing 'order' field",
 						impl_name
 					))
 				})?;
+
+			let order_standards: Vec<String> = match order_value {
+				toml::Value::String(s) => vec![s.clone()],
+				toml::Value::Array(arr) => {
+					arr.iter()
+						.map(|v| {
+							v.as_str()
+								.ok_or_else(|| {
+									ConfigError::Validation(format!(
+										"Settlement implementation '{}' has non-string value in 'order' array",
+										impl_name
+									))
+								})
+								.map(|s| s.to_string())
+						})
+						.collect::<Result<Vec<_>, _>>()?
+				}
+				_ => {
+					return Err(ConfigError::Validation(format!(
+						"Settlement implementation '{}' has invalid 'order' field type (must be string or array of strings)",
+						impl_name
+					)))
+				}
+			};
 
 			// Extract network_ids
 			let network_ids = impl_config
@@ -660,13 +683,16 @@ impl Config {
 					))
 				})? as u64;
 
-				let key = (order_standard.to_string(), network_id);
+				// Process each order standard
+				for order_standard in &order_standards {
+					let key = (order_standard.clone(), network_id);
 
-				if let Some(existing) = coverage.insert(key.clone(), impl_name.clone()) {
-					return Err(ConfigError::Validation(format!(
-						"Duplicate settlement coverage for order '{}' on network {}: '{}' and '{}'",
-						order_standard, network_id, existing, impl_name
-					)));
+					if let Some(existing) = coverage.insert(key.clone(), impl_name.clone()) {
+						return Err(ConfigError::Validation(format!(
+							"Duplicate settlement coverage for order '{}' on network {}: '{}' and '{}'",
+							order_standard, network_id, existing, impl_name
+						)));
+					}
 				}
 
 				// Validate network exists in networks config

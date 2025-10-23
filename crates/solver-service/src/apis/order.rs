@@ -84,6 +84,7 @@ async fn convert_order_to_response(order: Order) -> Result<OrderResponse, GetOrd
 	// Handle different order standards
 	match order.standard.as_str() {
 		"eip7683" => convert_eip7683_order_to_response(order).await,
+		"signet" => convert_signet_order_to_response(order).await,
 		_ => {
 			// Handle unknown standards
 			Err(GetOrderError::Internal(format!(
@@ -109,6 +110,83 @@ fn create_interop_address_string(token: &str, chain_id: u64) -> Result<String, G
 }
 
 /// Converts an EIP-7683 order to API OrderResponse format.
+/// Converts a Signet order to an API OrderResponse.
+async fn convert_signet_order_to_response(
+	order: solver_types::Order,
+) -> Result<OrderResponse, GetOrderError> {
+	// For Signet orders, the entire SignedOrder is stored in order.data
+	// We'll extract what we need from it
+
+	// For now, create a minimal response with placeholder values
+	// TODO: Parse SignedOrder properly and extract input/output amounts
+	let input_chain_id = order
+		.input_chains
+		.first()
+		.map(|c| c.chain_id)
+		.unwrap_or(14174);
+
+	let output_chain_id = order
+		.output_chains
+		.first()
+		.map(|c| c.chain_id)
+		.unwrap_or(14174);
+
+	// Create placeholder asset amounts
+	// In a real implementation, we would parse the SignedOrder from order.data
+	let input_amount = AssetAmount {
+		asset: format!("eip155:{}:0x0000000000000000000000000000000000000000", input_chain_id),
+		amount: alloy_primitives::U256::ZERO,
+	};
+
+	let output_amount = AssetAmount {
+		asset: format!("eip155:{}:0x0000000000000000000000000000000000000000", output_chain_id),
+		amount: alloy_primitives::U256::ZERO,
+	};
+
+	// For Signet, use Permit2Escrow settlement type
+	let settlement_type = SettlementType::Permit2Escrow;
+
+	// Include the full SignedOrder data
+	let settlement_data = order.data.clone();
+
+	// Check for fill transaction
+	let fill_transaction = order.fill_tx_hash.as_ref().map(|fill_tx_hash| {
+		let tx_status = match order.status {
+			OrderStatus::Executed
+			| OrderStatus::PostFilled
+			| OrderStatus::PreClaimed
+			| OrderStatus::Settled
+			| OrderStatus::Finalized => "executed",
+			OrderStatus::Executing => "pending",
+			OrderStatus::Created | OrderStatus::Pending => "pending",
+			OrderStatus::Failed(TransactionType::Fill) => "failed",
+			OrderStatus::Failed(_) => "failed",
+		};
+		serde_json::json!({
+			"hash": with_0x_prefix(&alloy_primitives::hex::encode(&fill_tx_hash.0)),
+			"status": tx_status,
+			"timestamp": order.updated_at
+		})
+	});
+
+	let response = OrderResponse {
+		id: order.id,
+		status: order.status,
+		created_at: order.created_at,
+		updated_at: order.updated_at,
+		quote_id: order.quote_id,
+		input_amount,
+		output_amount,
+		settlement: Settlement {
+			settlement_type,
+			data: settlement_data,
+		},
+		fill_transaction,
+	};
+
+	Ok(response)
+}
+
 async fn convert_eip7683_order_to_response(
 	order: solver_types::Order,
 ) -> Result<OrderResponse, GetOrderError> {

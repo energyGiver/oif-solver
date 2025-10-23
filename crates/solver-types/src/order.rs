@@ -233,6 +233,17 @@ impl Order {
 					.map_err(|e| format!("Failed to parse EIP-7683 order data: {}", e))?;
 				Ok(Box::new(order_data))
 			},
+			"signet" => {
+				// Parse the SignedOrder from the order data
+				let signed_order: signet_types::SignedOrder = serde_json::from_value(self.data.clone())
+					.map_err(|e| format!("Failed to parse Signet SignedOrder: {}", e))?;
+
+				Ok(Box::new(SignetOrderData {
+					signed_order,
+					input_chain_id: self.input_chains.first().map(|c| c.chain_id).unwrap_or(14174),
+					output_chain_id: self.output_chains.first().map(|c| c.chain_id).unwrap_or(14174),
+				}))
+			},
 			_ => Err(format!("Unsupported order standard: {}", self.standard).into()),
 		}
 	}
@@ -381,5 +392,87 @@ impl fmt::Display for OrderStatus {
 			OrderStatus::Finalized => write!(f, "Finalized"),
 			OrderStatus::Failed(_) => write!(f, "Failed"),
 		}
+	}
+}
+
+/// Order data for Signet orders.
+///
+/// Contains the parsed SignedOrder data for profitability calculations.
+#[derive(Debug, Clone)]
+pub struct SignetOrderData {
+	pub signed_order: signet_types::SignedOrder,
+	pub input_chain_id: u64,
+	pub output_chain_id: u64,
+}
+
+impl OrderParsable for SignetOrderData {
+	fn parse_available_inputs(&self) -> Vec<AvailableInput> {
+		// Parse inputs from the permit batch
+		// Note: Permit2Batch structure: permit contains the token details
+		let permitted = &self.signed_order.permit.permit.permitted;
+
+		permitted
+			.iter()
+			.map(|token_permissions| {
+				let asset = crate::InteropAddress::new_ethereum(
+					self.input_chain_id,
+					token_permissions.token.into(),
+				);
+				let user = crate::InteropAddress::new_ethereum(
+					self.input_chain_id,
+					self.signed_order.permit.owner.into(),
+				);
+
+				AvailableInput {
+					user,
+					asset,
+					amount: token_permissions.amount.into(),
+					lock: None,
+				}
+			})
+			.collect()
+	}
+
+	fn parse_requested_outputs(&self) -> Vec<RequestedOutput> {
+		// Parse outputs from the signed order
+		self.signed_order
+			.outputs
+			.iter()
+			.map(|output| {
+				let asset = crate::InteropAddress::new_ethereum(
+					output.chainId as u64,
+					output.token.into(),
+				);
+				let receiver = crate::InteropAddress::new_ethereum(
+					output.chainId as u64,
+					output.recipient.into(),
+				);
+
+				RequestedOutput {
+					receiver,
+					asset,
+					amount: output.amount.into(),
+					calldata: None,
+				}
+			})
+			.collect()
+	}
+
+	fn parse_lock_type(&self) -> Option<String> {
+		// Signet uses Permit2-based locking
+		Some("permit2_escrow".to_string())
+	}
+
+	fn input_oracle(&self) -> String {
+		// Signet doesn't use traditional oracles for bundle delivery
+		"0x0000000000000000000000000000000000000000".to_string()
+	}
+
+	fn origin_chain_id(&self) -> u64 {
+		self.input_chain_id
+	}
+
+	fn destination_chain_ids(&self) -> Vec<u64> {
+		vec![self.output_chain_id]
 	}
 }

@@ -10,7 +10,7 @@ include = [
 [solver]
 id = "oif-solver-demo"
 monitoring_timeout_minutes = 5
-min_profitability_pct = 1.0
+min_profitability_pct = -1.0
 
 # ============================================================================
 # STORAGE
@@ -36,7 +36,11 @@ primary = "local"
 
 [account.implementations.local]
 # Signet Pecorino Signer Key
-private_key = "0x16bbae6ef31163943147e8bffe6608493c94d2ae9922488942926a608a0e1930"
+# Builder
+# private_key = "0x16bbae6ef31163943147e8bffe6608493c94d2ae9922488942926a608a0e1930"
+# My Custom
+private_key = "0xa233a35a69d1c4e72cf157bf7a1995e62b5a916a7892d0ea2778694f1a2b202e"
+
 
 # ============================================================================
 # DELIVERY
@@ -49,13 +53,16 @@ network_ids = [31337, 31338]
 
 # Signet Pecorino Bundle Delivery
 [delivery.implementations.signet_bundle]
-network_ids = [14174, 3151908]  # Pecorino Rollup and Host chains
+network_ids = [14174, 3151908]                                           # Pecorino Rollup and Host chains
 chain_name = "pecorino"
 rollup_chain_id = 14174
 host_chain_id = 3151908
 order_origin_address = "0x000000000000007369676E65742D6f7264657273"
 order_destination_address = "0x0A4f505364De0Aa46c66b15aBae44eBa12ab0380"
-filler_recipient = "0x21c10426fa5101ab80042ac6cf89f65a7d9e7bcb"
+# Builder
+# filler_recipient = "0x21c10426fa5101ab80042ac6cf89f65a7d9e7bcb"
+# My Custom
+filler_recipient = "0x86973F6C0Ad9D1A1519254f2b89CB341865E8B4E"
 
 # ============================================================================
 # DISCOVERY
@@ -76,7 +83,10 @@ filler_recipient = "0x21c10426fa5101ab80042ac6cf89f65a7d9e7bcb"
 [discovery.implementations.signet_cache]
 chain_name = "pecorino"
 polling_interval_secs = 5
-whitelist = ["0x21c10426fa5101ab80042ac6cf89f65a7d9e7bcb"]
+# Builder
+# whitelist_addresses = ["0x21c10426fa5101ab80042ac6cf89f65a7d9e7bcb"]
+# My Custom
+whitelist_addresses = ["0x86973F6C0Ad9D1A1519254f2b89CB341865E8B4E"]
 
 # ============================================================================
 # ORDER
@@ -84,6 +94,8 @@ whitelist = ["0x21c10426fa5101ab80042ac6cf89f65a7d9e7bcb"]
 [order]
 
 [order.implementations.eip7683]
+
+[order.implementations.signet]
 
 [order.strategy]
 primary = "simple"
@@ -121,31 +133,42 @@ chain_id = 1
 address = "0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0"
 
 [settlement.implementations.direct]
-order = "eip7683"
-network_ids = [31337, 31338]
+order = ["eip7683", "signet"]                # Support both EIP-7683 and Signet orders
+network_ids = [31337, 31338, 14174, 3151908] # Include Signet networks
 dispute_period_seconds = 1
 # Oracle selection strategy when multiple oracles are available (First, RoundRobin, Random)
 oracle_selection_strategy = "First"
 
 # Oracle configuration with multiple oracle support
 [settlement.implementations.direct.oracles]
-# Input oracles (on origin chains)
+# Input oracles (on origin chains) - including dummy oracles for Signet (bundle delivery handles execution)
 input = { 31337 = [
     "0xDc64a140Aa3E981100a9becA4E685f962f0cF6C9",
 ], 31338 = [
     "0xDc64a140Aa3E981100a9becA4E685f962f0cF6C9",
+], 14174 = [
+    "0x000000000000007369676E65742D6f7264657273",
+], 3151908 = [
+    "0x0A4f505364De0Aa46c66b15aBae44eBa12ab0380",
 ] }
-# Output oracles (on destination chains)
+# Output oracles (on destination chains) - including dummy oracles for Signet (bundle delivery handles execution)
 output = { 31337 = [
     "0xDc64a140Aa3E981100a9becA4E685f962f0cF6C9",
 ], 31338 = [
     "0xDc64a140Aa3E981100a9becA4E685f962f0cF6C9",
+], 14174 = [
+    "0x000000000000007369676E65742D6f7264657273",
+], 3151908 = [
+    "0x0A4f505364De0Aa46c66b15aBae44eBa12ab0380",
 ] }
 
 # Valid routes: from origin chain -> to destination chains
 [settlement.implementations.direct.routes]
 31337 = [31338] # Can go from origin to destination
 31338 = [31337] # Can go from destination to origin
+# Signet routes (dummy for validation - bundle delivery handles execution)
+14174 = [3151908]
+3151908 = [14174]
 
 # ============================================================================
 # HYPERLANE SETTLEMENT (For cross-chain messaging)

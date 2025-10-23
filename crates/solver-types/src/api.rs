@@ -349,6 +349,7 @@ impl IntentRequest {
 pub enum SettlementType {
 	Escrow,
 	ResourceLock,
+	Permit2Escrow,
 }
 
 /// Response containing quote options following UII standard

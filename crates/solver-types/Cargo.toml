@@ -24,3 +24,4 @@ tokio = { workspace = true, features = ["sync"] }
 toml = { workspace = true }
 tracing = "0.1"
 zeroize = { version = "1.8", features = ["derive"] }
+signet-types = { git = "https://github.com/init4tech/signet-sdk", branch = "main" }
