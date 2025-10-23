@@ -31,7 +31,7 @@ impl TransactionMonitor {
 	}
 
 	/// Monitors a pending transaction until it is confirmed or fails.
-	#[instrument(skip_all, fields(order_id = %truncate_id(&order_id), tx_hash = %truncate_id(&hex::encode(&tx_hash.0)), tx_type = ?tx_type))]
+	#[instrument(skip_all, fields(order_id = %truncate_id(&order_id), tx_hash = %hex::encode(&tx_hash.0), tx_type = ?tx_type))]
 	pub async fn monitor(
 		&self,
 		order_id: String,
@@ -58,7 +58,7 @@ impl TransactionMonitor {
 			if start_time.elapsed() > monitoring_timeout {
 				tracing::warn!(
 					order_id = %truncate_id(&order_id),
-					tx_hash = %truncate_id(&hex::encode(&tx_hash.0)),
+					tx_hash = %hex::encode(&tx_hash.0),
 					tx_type = ?tx_type,
 					"Transaction monitoring timeout reached after {} minutes",
 					self.timeout_minutes
@@ -91,7 +91,7 @@ impl TransactionMonitor {
 						Err(e) => {
 							tracing::error!(
 								order_id = %truncate_id(&order_id),
-								tx_hash = %truncate_id(&hex::encode(&tx_hash.0)),
+								tx_hash = %hex::encode(&tx_hash.0),
 								tx_type = ?tx_type,
 								error = %e,
 								"Failed to wait for confirmations"

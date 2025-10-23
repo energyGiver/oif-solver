@@ -140,6 +140,63 @@ impl OrderHandler {
 		order: Order,
 		params: ExecutionParams,
 	) -> Result<(), OrderError> {
+		// Signet orders use bundle delivery instead of traditional fill transactions
+		if order.standard == "signet" {
+			// For Signet, we create a bundle transaction with the SignedOrder data
+			// The bundle delivery service will handle creating SignedFill and submitting to cache
+			let tx = solver_types::Transaction {
+				chain_id: order.input_chains.first().map(|c| c.chain_id).unwrap_or(14174),
+				to: order.input_chains.first().map(|c| Some(c.settler_address.clone())).unwrap_or_else(|| {
+					// Fallback to zero address if no input chains
+					Some(solver_types::Address(vec![0u8; 20]))
+				}),
+				data: vec![], // Empty data - bundle delivery constructs the actual payload
+				value: alloy_primitives::U256::ZERO,
+				gas_limit: None,
+				gas_price: None, // Use EIP-1559 fees instead
+				max_fee_per_gas: params.gas_price.to::<u128>().try_into().ok(),
+				max_priority_fee_per_gas: params.priority_fee.and_then(|fee| fee.to::<u128>().try_into().ok()),
+				nonce: None,
+				metadata: Some(order.data.clone()), // Pass SignedOrder data to bundle delivery
+			};
+
+			// Submit via bundle delivery (which will create SignedFill and submit bundle)
+			let tx_hash = self
+				.delivery
+				.deliver(tx.clone())
+				.await
+				.map_err(|e| OrderError::Service(e.to_string()))?;
+
+			self.event_bus
+				.publish(SolverEvent::Delivery(DeliveryEvent::TransactionPending {
+					order_id: order.id.clone(),
+					tx_hash: tx_hash.clone(),
+					tx_type: TransactionType::Fill,
+					tx_chain_id: tx.chain_id,
+				}))
+				.ok();
+
+			// Store fill transaction
+			self.state_machine
+				.set_transaction_hash(&order.id, tx_hash.clone(), TransactionType::Fill)
+				.await
+				.map_err(|e| OrderError::State(e.to_string()))?;
+
+			// Store reverse mapping: tx_hash -> order_id
+			self.storage
+				.store(
+					StorageKey::OrderByTxHash.as_str(),
+					&hex::encode(&tx_hash.0),
+					&order.id,
+					None,
+				)
+				.await
+				.map_err(|e| OrderError::Storage(e.to_string()))?;
+
+			return Ok(());
+		}
+
+		// For non-Signet orders, use traditional fill transaction generation
 		// Generate fill transaction
 		let mut tx = self
 			.order_service
@@ -147,8 +204,8 @@ impl OrderHandler {
 			.await
 			.map_err(|e| OrderError::Service(e.to_string()))?;
 
-		// For Signet orders (EIP-7683), attach order data as metadata
-		// This allows Signet delivery to reconstruct the SignedOrder for bundle creation
+		// For EIP-7683 orders, attach order data as metadata
+		// This allows delivery to reconstruct the order for settlement
 		// The lock_type information is embedded in the order.data JSON
 		if order.standard == "eip7683" {
 			tx.metadata = Some(order.data.clone());

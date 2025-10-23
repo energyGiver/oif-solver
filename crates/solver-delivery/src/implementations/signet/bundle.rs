@@ -13,6 +13,7 @@
 
 use crate::{DeliveryError, DeliveryInterface};
 use alloy_primitives::Bytes;
+use alloy_provider::{Provider, ProviderBuilder};
 use alloy_rpc_types::mev::EthSendBundle;
 use alloy_signer_local::PrivateKeySigner;
 use async_trait::async_trait;
@@ -23,6 +24,7 @@ use solver_types::{
 	ConfigSchema, Field, FieldType, NetworksConfig, Schema, Transaction as SolverTransaction,
 	TransactionHash, TransactionReceipt,
 };
+use std::collections::HashMap;
 use std::sync::Arc;
 
 const DEFAULT_BLOCK_NUMBER: u64 = 1;
@@ -54,12 +56,15 @@ pub struct SignetBundleDelivery {
 	/// Delivery configuration
 	config: SignetBundleConfig,
 	/// Networks configuration
-	_networks: NetworksConfig,
+	networks: NetworksConfig,
 	/// Signet cache client
 	cache_client: Arc<TxCache>,
 	/// Solver's signer for creating SignedFills
 	#[allow(dead_code)] // Used in TODO: create_signed_fill implementation
 	signer: PrivateKeySigner,
+	/// Simple flag to track if we've tried fetching block numbers via RPC
+	/// (no need to store complex provider types, just call RPC directly when needed)
+	_rpc_enabled: bool,
 }
 
 impl SignetBundleDelivery {
@@ -87,9 +92,10 @@ impl SignetBundleDelivery {
 
 		Ok(Self {
 			config,
-			_networks: networks,
+			networks,
 			cache_client: Arc::new(cache_client),
 			signer,
+			_rpc_enabled: true,
 		})
 	}
 
@@ -102,10 +108,16 @@ impl SignetBundleDelivery {
 
 		// Extract SignedOrder from transaction metadata
 		let signed_order = if let Some(metadata) = &tx.metadata {
+			tracing::debug!("Deserializing SignedOrder from transaction metadata");
 			// Deserialize SignedOrder from metadata
-			serde_json::from_value::<signet_types::SignedOrder>(metadata.clone()).map_err(|e| {
+			let signed_order = serde_json::from_value::<signet_types::SignedOrder>(metadata.clone()).map_err(|e| {
 				DeliveryError::Network(format!("Failed to deserialize SignedOrder from metadata: {}", e))
-			})?
+			})?;
+			tracing::info!(
+				outputs_count = signed_order.outputs.len(),
+				"Successfully deserialized SignedOrder"
+			);
+			signed_order
 		} else {
 			// No metadata - this is not a Signet order, create empty bundle
 			tracing::warn!("No metadata in transaction, creating empty bundle");
@@ -167,26 +179,63 @@ impl SignetBundleDelivery {
 	///
 	/// The filler creates a permit2 signature authorizing the transfer of tokens
 	/// to fulfill the order's outputs on the host (L1) chain.
-	///
-	/// TODO: Implement full SignedFill creation using UnsignedFill pattern.
-	/// This requires converting the SignedOrder's outputs into an AggregateOrders
-	/// structure and using UnsignedFill::sign_for() to create the SignedFill.
-	/// For now, returns None to allow basic bundle submission without fills.
 	async fn create_signed_fill(
 		&self,
-		_signed_order: &signet_types::SignedOrder,
+		signed_order: &signet_types::SignedOrder,
 	) -> Result<Option<SignedFill>, DeliveryError> {
-		// TODO: Implement SignedFill creation
-		// Steps required:
-		// 1. Filter outputs for host chain
-		// 2. Create AggregateOrders from the outputs
-		// 3. Use UnsignedFill::new(&agg_orders)
-		//    .with_ru_chain_id(rollup_chain_id)
-		//    .with_chain(host_chain_id, order_destination_address)
-		//    .sign_for(host_chain_id, &self.signer)
-		//
-		// For now, return None (bundle will have no host fills)
-		Ok(None)
+		// Check if there are any host chain outputs to fill
+		tracing::debug!(
+			outputs_count = signed_order.outputs.len(),
+			host_chain_id = self.config.host_chain_id,
+			output_chain_ids = ?signed_order.outputs.iter().map(|o| o.chainId).collect::<Vec<_>>(),
+			"Checking for host chain outputs in order"
+		);
+
+		let has_host_outputs = signed_order
+			.outputs
+			.iter()
+			.any(|output| output.chainId as u64 == self.config.host_chain_id);
+
+		if !has_host_outputs {
+			tracing::warn!(
+				host_chain_id = self.config.host_chain_id,
+				outputs_count = signed_order.outputs.len(),
+				output_chain_ids = ?signed_order.outputs.iter().map(|o| o.chainId).collect::<Vec<_>>(),
+				"No host chain outputs in order, skipping SignedFill creation"
+			);
+			return Ok(None);
+		}
+
+		// 1. Create AggregateOrders from the SignedOrder
+		let mut agg_orders = signet_types::AggregateOrders::new();
+		agg_orders.ingest_signed(signed_order);
+
+		tracing::debug!(
+			rollup_chain_id = self.config.rollup_chain_id,
+			host_chain_id = self.config.host_chain_id,
+			"Creating SignedFill for host outputs"
+		);
+
+		// 2. Create UnsignedFill and configure with chain info
+		let unsigned_fill = signet_types::UnsignedFill::new(&agg_orders)
+			.with_ru_chain_id(self.config.rollup_chain_id)
+			.with_chain(self.config.host_chain_id, self.config.order_destination_address.into());
+
+		// 3. Sign the fill for the host chain
+		let signed_fill = unsigned_fill
+			.sign_for(self.config.host_chain_id, &self.signer)
+			.await
+			.map_err(|e| {
+				DeliveryError::Network(format!("Failed to sign fill for host chain: {}", e))
+			})?;
+
+		tracing::info!(
+			host_chain_id = self.config.host_chain_id,
+			outputs_count = signed_fill.outputs.len(),
+			"Successfully created SignedFill"
+		);
+
+		Ok(Some(signed_fill))
 	}
 }
 
@@ -303,11 +352,41 @@ impl DeliveryInterface for SignetBundleDelivery {
 		Ok(0)
 	}
 
-	async fn get_block_number(&self, _chain_id: u64) -> Result<u64, DeliveryError> {
-		// TODO: Implement block number retrieval from Signet cache if available
-		Err(DeliveryError::Network(
-			"Block number retrieval not yet implemented for Signet".to_string(),
-		))
+	async fn get_block_number(&self, chain_id: u64) -> Result<u64, DeliveryError> {
+		// Get RPC URL from network config
+		let network_config = self.networks.get(&chain_id);
+
+		if let Some(config) = network_config {
+			if let Some(rpc_url) = config.rpc_urls.first().and_then(|rpc| rpc.http.as_ref()) {
+				// Try to fetch block number from RPC
+				if let Ok(url) = rpc_url.parse::<reqwest::Url>() {
+					let provider = ProviderBuilder::new()
+						.network::<alloy_network::AnyNetwork>()
+						.on_http(url);
+
+					match provider.get_block_number().await {
+						Ok(block_number) => {
+							tracing::debug!(
+								chain_id = chain_id,
+								block_number = block_number,
+								"Retrieved Signet block number from RPC"
+							);
+							return Ok(block_number);
+						},
+						Err(e) => {
+							tracing::warn!(
+								chain_id = chain_id,
+								error = %e,
+								"Failed to fetch Signet block number from RPC, using fallback"
+							);
+						},
+					}
+				}
+			}
+		}
+
+		// Fall back to config target_block or default if RPC fails
+		Ok(self.config.target_block.unwrap_or(DEFAULT_BLOCK_NUMBER))
 	}
 
 	async fn estimate_gas(&self, _tx: SolverTransaction) -> Result<u64, DeliveryError> {
