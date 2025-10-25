@@ -166,33 +166,51 @@ impl IntentHandler {
 					},
 				};
 
-				// Validate profitability
-				match self
-					.cost_profit_service
-					.validate_profitability(
-						&order,
-						&cost_estimate,
-						self.config.solver.min_profitability_pct,
-					)
-					.await
-				{
-					Ok(actual_profit_margin) => {
-						tracing::info!(
-							"Order passed profitability validation: {:.2}% (min required: {:.2}%)",
-							actual_profit_margin,
-							self.config.solver.min_profitability_pct
-						);
-					},
-					Err(e) => {
-						tracing::warn!("Order failed profitability validation: {}", e);
-						self.event_bus
-							.publish(SolverEvent::Order(OrderEvent::Skipped {
-								order_id: order.id.clone(),
-								reason: format!("Insufficient profitability: {}", e),
-							}))
-							.ok();
-						return Ok(());
-					},
+				// Validate profitability (skip for Signet testnet orders)
+				if order.standard != "signet" {
+					match self
+						.cost_profit_service
+						.validate_profitability(
+							&order,
+							&cost_estimate,
+							self.config.solver.min_profitability_pct,
+						)
+						.await
+					{
+						Ok(actual_profit_margin) => {
+							tracing::info!(
+								"Order passed profitability validation: {:.2}% (min required: {:.2}%)",
+								actual_profit_margin,
+								self.config.solver.min_profitability_pct
+							);
+						},
+						Err(e) => {
+							tracing::warn!("Order failed profitability validation: {}", e);
+							self.event_bus
+								.publish(SolverEvent::Order(OrderEvent::Skipped {
+									order_id: order.id.clone(),
+									reason: format!("Insufficient profitability: {}", e),
+								}))
+								.ok();
+							// Remove intent to prevent duplicate processing
+							if let Err(remove_err) = self
+								.storage
+								.remove(StorageKey::Intents.as_str(), &intent.id)
+								.await
+							{
+								tracing::warn!(
+									intent_id = %intent.id,
+									error = %remove_err,
+									"Failed to remove intent after profitability skip"
+								);
+							}
+							return Ok(());
+						},
+					}
+				} else {
+					tracing::info!(
+						"Skipping profitability validation for Signet testnet order"
+					);
 				}
 
 				self.event_bus
