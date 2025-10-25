@@ -54,8 +54,6 @@ pub struct SignetCacheConfig {
 pub struct SignetCacheDiscovery {
 	/// Discovery configuration
 	config: SignetCacheConfig,
-	/// Networks configuration
-	networks: NetworksConfig,
 	/// Flag indicating if monitoring is active
 	is_monitoring: Arc<AtomicBool>,
 	/// Handle for the monitoring task
@@ -68,7 +66,7 @@ impl SignetCacheDiscovery {
 	/// Creates a new Signet cache discovery instance.
 	pub fn new(
 		config: SignetCacheConfig,
-		networks: NetworksConfig,
+		_networks: NetworksConfig,
 	) -> Result<Self, DiscoveryError> {
 		// Validate chain name
 		if config.chain_name.is_empty() {
@@ -89,7 +87,6 @@ impl SignetCacheDiscovery {
 
 		Ok(Self {
 			config,
-			networks,
 			is_monitoring: Arc::new(AtomicBool::new(false)),
 			monitoring_handle: Arc::new(Mutex::new(None)),
 			stop_signal: Arc::new(Mutex::new(None)),

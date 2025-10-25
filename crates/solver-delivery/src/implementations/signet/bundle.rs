@@ -69,14 +69,26 @@ pub struct SignetBundleDelivery {
 	/// Signet cache client
 	cache_client: Arc<TxCache>,
 	/// Solver's signer for creating SignedFills
-	#[allow(dead_code)] // Used in TODO: create_signed_fill implementation
 	signer: PrivateKeySigner,
-	/// Simple flag to track if we've tried fetching block numbers via RPC
-	/// (no need to store complex provider types, just call RPC directly when needed)
-	_rpc_enabled: bool,
 }
 
 impl SignetBundleDelivery {
+	/// Helper method to get RPC URL for a given chain ID.
+	fn get_rpc_url(&self, chain_id: u64) -> Result<String, DeliveryError> {
+		let network_config = self.networks.get(&chain_id).ok_or_else(|| {
+			DeliveryError::Network(format!("No network config for chain {}", chain_id))
+		})?;
+
+		network_config
+			.rpc_urls
+			.first()
+			.and_then(|rpc| rpc.http.as_ref())
+			.cloned()
+			.ok_or_else(|| {
+				DeliveryError::Network(format!("No HTTP RPC URL for chain {}", chain_id))
+			})
+	}
+
 	/// Creates a new Signet bundle delivery instance.
 	pub fn new(
 		config: SignetBundleConfig,
@@ -106,7 +118,6 @@ impl SignetBundleDelivery {
 			networks,
 			cache_client: Arc::new(cache_client),
 			signer,
-			_rpc_enabled: true,
 		})
 	}
 
@@ -227,35 +238,16 @@ impl SignetBundleDelivery {
 		&self,
 		tx_requests: Vec<alloy_rpc_types::TransactionRequest>,
 	) -> Result<Vec<Bytes>, DeliveryError> {
-		// Get network config for RPC URL
-		let network_config = self
-			.networks
-			.get(&self.config.rollup_chain_id)
-			.ok_or_else(|| {
-				DeliveryError::Network(format!(
-					"No network config for rollup chain {}",
-					self.config.rollup_chain_id
-				))
-			})?;
-
-		let rpc_url = network_config
-			.rpc_urls
-			.first()
-			.and_then(|rpc| rpc.http.as_ref())
-			.ok_or_else(|| {
-				DeliveryError::Network(format!(
-					"No HTTP RPC URL for chain {}",
-					self.config.rollup_chain_id
-				))
-			})?;
+		// Get RPC URL for rollup chain
+		let rpc_url = self.get_rpc_url(self.config.rollup_chain_id)?;
 
 		// Create provider with wallet (needed for fill method)
 		// IMPORTANT: Use the same provider for all transactions to ensure correct nonce ordering
 		let wallet = EthereumWallet::from(self.signer.clone());
 		let provider = ProviderBuilder::new().wallet(wallet).connect_http(
-			rpc_url
-				.parse()
-				.map_err(|e| DeliveryError::Network(format!("Invalid RPC URL: {}", e)))?,
+			rpc_url.parse().map_err(|e| {
+				DeliveryError::Network(format!("Invalid RPC URL: {}", e))
+			})?,
 		);
 
 		let mut encoded_txs = Vec::new();
@@ -443,7 +435,7 @@ impl DeliveryInterface for SignetBundleDelivery {
 			bundles_count
 		);
 
-		// 2. 생성된 모든 번들을 캐시에 순차적으로 제출합니다.
+		// Submit all generated bundles to the cache sequentially
 		for (i, bundle) in bundles.into_iter().enumerate() {
 			let block_number = bundle.bundle.block_number;
 
@@ -478,7 +470,7 @@ impl DeliveryInterface for SignetBundleDelivery {
 			);
 		}
 
-		// 마지막으로 제출된 번들의 ID를 반환합니다.
+		// Return the ID of the last submitted bundle
 		let bundle_id_bytes = last_bundle_id.as_bytes().to_vec();
 		Ok(TransactionHash(bundle_id_bytes))
 	}
@@ -552,7 +544,7 @@ impl DeliveryInterface for SignetBundleDelivery {
 				if let Ok(url) = rpc_url.parse::<reqwest::Url>() {
 					let provider = ProviderBuilder::new()
 						.network::<alloy_network::AnyNetwork>()
-						.on_http(url);
+						.connect_http(url);
 
 					match provider.get_block_number().await {
 						Ok(block_number) => {
