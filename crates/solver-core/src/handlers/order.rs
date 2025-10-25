@@ -209,6 +209,26 @@ impl OrderHandler {
 				.await
 				.map_err(|e| OrderError::Storage(e.to_string()))?;
 
+			// For Signet orders, remove intent from storage immediately after successful bundle submission
+			// Signet bundles are submitted to 10 consecutive blocks, making them highly reliable
+			// This prevents duplicate processing of the same intent
+			if let Err(e) = self
+				.storage
+				.remove(StorageKey::Intents.as_str(), &order.id)
+				.await
+			{
+				tracing::warn!(
+					order_id = %order.id,
+					error = %e,
+					"Failed to remove intent after Signet bundle submission (non-critical)"
+				);
+			} else {
+				tracing::info!(
+					order_id = %order.id,
+					"Removed intent from storage after successful Signet bundle submission"
+				);
+			}
+
 			return Ok(());
 		}
 
