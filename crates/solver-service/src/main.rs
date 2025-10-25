@@ -29,6 +29,10 @@ struct Args {
 	/// Log level (trace, debug, info, warn, error)
 	#[arg(short, long, default_value = "info")]
 	log_level: String,
+
+	/// Clear all storage data on startup (fresh start)
+	#[arg(long)]
+	clean: bool,
 }
 
 /// Main entry point for the solver service.
@@ -62,6 +66,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 	// Load configuration
 	let config = Config::from_file(args.config.to_str().unwrap()).await?;
 	tracing::info!("Loaded configuration [{}]", config.solver.id);
+
+	// Clean storage if requested
+	if args.clean {
+		tracing::info!("Cleaning all storage data (--clean flag)");
+
+		// Clean file-based storage directories
+		for (name, storage_config) in &config.storage.implementations {
+			if let Some(path) = storage_config.get("path").and_then(|v| v.as_str()) {
+				let storage_path = std::path::Path::new(path);
+				if storage_path.exists() {
+					match std::fs::remove_dir_all(storage_path) {
+						Ok(_) => {
+							tracing::info!(
+								"Removed storage directory: {} ({})",
+								name,
+								storage_path.display()
+							);
+						}
+						Err(e) => {
+							tracing::warn!(
+								"Failed to remove storage directory {} ({}): {}",
+								name,
+								storage_path.display(),
+								e
+							);
+						}
+					}
+				}
+			}
+		}
+
+		tracing::info!("Storage cleanup complete - starting with fresh state");
+	}
 
 	// Build solver engine with implementations using the factory registry
 	let solver = build_solver_from_config(config.clone()).await?;
