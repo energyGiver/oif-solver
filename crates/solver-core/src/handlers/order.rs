@@ -15,7 +15,7 @@ use solver_types::{
 };
 use std::sync::Arc;
 use thiserror::Error;
-use tracing::instrument;
+use tracing::{debug, instrument};
 
 /// Errors that can occur during order processing.
 ///
@@ -144,18 +144,34 @@ impl OrderHandler {
 		if order.standard == "signet" {
 			// For Signet, we create a bundle transaction with the SignedOrder data
 			// The bundle delivery service will handle creating SignedFill and submitting to cache
+			debug!(
+				max_fee_per_gas = ?params.gas_price,
+				max_priority_fee_per_gas = ?params.priority_fee,
+				"Handling Signet order execution via bundle delivery"
+			);
+
 			let tx = solver_types::Transaction {
-				chain_id: order.input_chains.first().map(|c| c.chain_id).unwrap_or(14174),
-				to: order.input_chains.first().map(|c| Some(c.settler_address.clone())).unwrap_or_else(|| {
-					// Fallback to zero address if no input chains
-					Some(solver_types::Address(vec![0u8; 20]))
-				}),
+				chain_id: order
+					.input_chains
+					.first()
+					.map(|c| c.chain_id)
+					.unwrap_or(14174),
+				to: order
+					.input_chains
+					.first()
+					.map(|c| Some(c.settler_address.clone()))
+					.unwrap_or_else(|| {
+						// Fallback to zero address if no input chains
+						Some(solver_types::Address(vec![0u8; 20]))
+					}),
 				data: vec![], // Empty data - bundle delivery constructs the actual payload
 				value: alloy_primitives::U256::ZERO,
 				gas_limit: None,
 				gas_price: None, // Use EIP-1559 fees instead
 				max_fee_per_gas: params.gas_price.to::<u128>().try_into().ok(),
-				max_priority_fee_per_gas: params.priority_fee.and_then(|fee| fee.to::<u128>().try_into().ok()),
+				max_priority_fee_per_gas: params
+					.priority_fee
+					.and_then(|fee| fee.to::<u128>().try_into().ok()),
 				nonce: None,
 				metadata: Some(order.data.clone()), // Pass SignedOrder data to bundle delivery
 			};

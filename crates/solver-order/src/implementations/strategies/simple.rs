@@ -174,7 +174,8 @@ impl ExecutionStrategy for SimpleStrategy {
 
 		// Use the maximum gas price for execution (could be made more sophisticated)
 		ExecutionDecision::Execute(ExecutionParams {
-			gas_price: max_gas_price,
+			// TODO: gas_price should be determined with a chain_data
+			gas_price: U256::from(2) * U256::from(10u64.pow(9)),
 			priority_fee: Some(U256::from(2) * U256::from(10u64.pow(9))), // 2 gwei priority
 		})
 	}

@@ -12,6 +12,8 @@
 //! the necessary context through the delivery pipeline.
 
 use crate::{DeliveryError, DeliveryInterface};
+use alloy_eips::eip2718::Encodable2718;
+use alloy_network::EthereumWallet;
 use alloy_primitives::Bytes;
 use alloy_provider::{Provider, ProviderBuilder};
 use alloy_rpc_types::mev::EthSendBundle;
@@ -24,10 +26,17 @@ use solver_types::{
 	ConfigSchema, Field, FieldType, NetworksConfig, Schema, Transaction as SolverTransaction,
 	TransactionHash, TransactionReceipt,
 };
-use std::collections::HashMap;
 use std::sync::Arc;
+use tokio::time::{sleep, Duration};
 
 const DEFAULT_BLOCK_NUMBER: u64 = 1;
+const NUM_TARGET_BLOCKS: u64 = 10;
+/// Default gas limit for transactions.
+const DEFAULT_GAS_LIMIT: u64 = 1_000_000;
+/// Default priority fee multiplier for transactions.
+const DEFAULT_PRIORITY_FEE_MULTIPLIER: u64 = 16;
+/// Multiplier for converting gwei to wei.
+const GWEI_TO_WEI: u64 = 1_000_000_000;
 
 /// Signet bundle delivery implementation configuration.
 #[derive(Debug, Clone)]
@@ -76,7 +85,9 @@ impl SignetBundleDelivery {
 	) -> Result<Self, DeliveryError> {
 		// Validate chain name
 		if config.chain_name.is_empty() {
-			return Err(DeliveryError::Network("chain_name cannot be empty".to_string()));
+			return Err(DeliveryError::Network(
+				"chain_name cannot be empty".to_string(),
+			));
 		}
 
 		// Build cache client based on chain name
@@ -99,19 +110,28 @@ impl SignetBundleDelivery {
 		})
 	}
 
-	/// Creates a bundle from a solver fill transaction.
+	/// Creates a series of bundles for subsequent blocks from a solver fill transaction.
 	///
-	/// Extracts the SignedOrder from transaction metadata and creates a proper
-	/// Signet bundle with the order initiation transaction and SignedFill.
-	async fn create_bundle(&self, tx: &SolverTransaction) -> Result<SignetEthBundle, DeliveryError> {
-		let target_block = self.config.target_block.unwrap_or(DEFAULT_BLOCK_NUMBER);
+	/// Generates NUM_TARGET_BLOCKS bundles, each targeting a block from
+	/// (current_block + 1) up to (current_block + NUM_TARGET_BLOCKS).
+	async fn create_bundles(
+		&self,
+		tx: &SolverTransaction,
+	) -> Result<Vec<SignetEthBundle>, DeliveryError> {
+		// --- (1) SignedOrder 및 L2 Initiate Tx 생성 로직은 하나만 수행
 
 		// Extract SignedOrder from transaction metadata
 		let signed_order = if let Some(metadata) = &tx.metadata {
+			// ... (SignedOrder Deserialization 로직 유지)
 			tracing::debug!("Deserializing SignedOrder from transaction metadata");
-			// Deserialize SignedOrder from metadata
-			let signed_order = serde_json::from_value::<signet_types::SignedOrder>(metadata.clone()).map_err(|e| {
-				DeliveryError::Network(format!("Failed to deserialize SignedOrder from metadata: {}", e))
+			let signed_order = serde_json::from_value::<signet_types::SignedOrder>(
+				metadata.clone(),
+			)
+			.map_err(|e| {
+				DeliveryError::Network(format!(
+					"Failed to deserialize SignedOrder from metadata: {}",
+					e
+				))
 			})?;
 			tracing::info!(
 				outputs_count = signed_order.outputs.len(),
@@ -119,11 +139,65 @@ impl SignetBundleDelivery {
 			);
 			signed_order
 		} else {
-			// No metadata - this is not a Signet order, create empty bundle
-			tracing::warn!("No metadata in transaction, creating empty bundle");
-			return Ok(SignetEthBundle {
+			return Err(DeliveryError::Network(
+				"No SignedOrder metadata in transaction for Signet bundle".to_string(),
+			));
+		};
+
+		// Get current rollup block number
+		let current_block = self.get_block_number(self.config.rollup_chain_id).await?;
+
+		// Create SignedFills for all target chains (both rollup and host)
+		let signed_fills = self.create_signed_fills(&signed_order).await?;
+
+		// Build rollup transaction requests (collect all requests first, then sign together)
+		let mut rollup_tx_requests = Vec::new();
+
+		// First, add fill transaction for rollup chain if it exists
+		if let Some(rollup_fill) = signed_fills.get(&self.config.rollup_chain_id) {
+			let fill_tx_request = rollup_fill.to_fill_tx(self.config.order_origin_address);
+			rollup_tx_requests.push(fill_tx_request);
+			tracing::debug!("Added rollup fill transaction request");
+		}
+
+		// Then, add initiate transaction
+		let initiate_tx_request = signed_order.to_initiate_tx(
+			self.config.filler_recipient,
+			self.config.order_origin_address,
+		);
+		rollup_tx_requests.push(initiate_tx_request);
+
+		// Sign and encode all transactions together (ensures correct nonce ordering)
+		let rollup_txs = self.sign_and_encode_txns(rollup_tx_requests).await?;
+
+		tracing::info!(
+			rollup_txs_count = rollup_txs.len(),
+			"Created rollup transactions (fill + initiate)"
+		);
+
+		// Get host chain fill (this goes in host_fills field, not in rollup txs)
+		let host_fills = signed_fills.get(&self.config.host_chain_id).cloned();
+
+		// --- (2) Target Block Number만 변경하며 10개의 Bundle 생성
+
+		let mut bundles = Vec::with_capacity(NUM_TARGET_BLOCKS as usize);
+		sleep(Duration::from_secs(2)).await;
+
+		for i in 1..=NUM_TARGET_BLOCKS {
+			let target_block = current_block + i;
+
+			tracing::debug!(
+				current_block = current_block,
+				target_block = target_block,
+				i = i,
+				has_host_fills = host_fills.is_some(),
+				rollup_txs_count = rollup_txs.len(),
+				"Creating bundle for target block"
+			);
+
+			let bundle = SignetEthBundle {
 				bundle: EthSendBundle {
-					txs: vec![],
+					txs: rollup_txs.clone(), // All rollup transactions (fill + initiate)
 					block_number: target_block,
 					min_timestamp: None,
 					max_timestamp: None,
@@ -131,111 +205,173 @@ impl SignetBundleDelivery {
 					replacement_uuid: None,
 					..Default::default()
 				},
-				host_fills: None,
+				host_fills: host_fills.clone(), // Host chain fill
 				host_txs: vec![],
-			});
-		};
+			};
+			bundles.push(bundle);
+		}
 
-		// Create initiate order transaction for L2
-		// This transaction calls OrderOrigin.initiatePermit2() with the SignedOrder
-		let initiate_tx_request = signed_order.to_initiate_tx(
-			self.config.filler_recipient,
-			self.config.order_origin_address,
-		);
-
-		// Encode the transaction request as bytes
-		// For Signet bundles, we send the transaction request bytes (not a signed transaction)
-		let initiate_tx_bytes = Bytes::from(
-			initiate_tx_request
-				.input
-				.input
-				.map(|b| b.to_vec())
-				.unwrap_or_default(),
-		);
-
-		// Create SignedFill for host (L1) outputs
-		// The filler signs a permit2 approval for the tokens they will send
-		let host_fills = self.create_signed_fill(&signed_order).await?;
-
-		// Create bundle with order initiation transaction and signed fill
-		let bundle = SignetEthBundle {
-			bundle: EthSendBundle {
-				txs: vec![initiate_tx_bytes], // L2 transaction to initiate the order
-				block_number: target_block,
-				min_timestamp: None,
-				max_timestamp: None,
-				reverting_tx_hashes: vec![],
-				replacement_uuid: None,
-				..Default::default()
-			},
-			host_fills,
-			host_txs: vec![], // Empty as per signet-orders example
-		};
-
-		Ok(bundle)
+		Ok(bundles)
 	}
 
-	/// Creates a SignedFill from the order's outputs.
+	/// Signs and encodes multiple transaction requests into RLP bytes.
 	///
-	/// The filler creates a permit2 signature authorizing the transfer of tokens
-	/// to fulfill the order's outputs on the host (L1) chain.
-	async fn create_signed_fill(
+	/// This follows the SDK's sign_and_encode_txns pattern:
+	/// 1. Set transaction fields (from, gas_limit, priority_fee) for each tx
+	/// 2. Use provider.fill() to populate remaining fields (nonce, gas price, etc.)
+	/// 3. Encode each signed envelope to bytes
+	///
+	/// CRITICAL: This method ensures correct nonce ordering by processing all
+	/// transactions sequentially with the same provider instance.
+	async fn sign_and_encode_txns(
 		&self,
-		signed_order: &signet_types::SignedOrder,
-	) -> Result<Option<SignedFill>, DeliveryError> {
-		// Check if there are any host chain outputs to fill
-		tracing::debug!(
-			outputs_count = signed_order.outputs.len(),
-			host_chain_id = self.config.host_chain_id,
-			output_chain_ids = ?signed_order.outputs.iter().map(|o| o.chainId).collect::<Vec<_>>(),
-			"Checking for host chain outputs in order"
+		tx_requests: Vec<alloy_rpc_types::TransactionRequest>,
+	) -> Result<Vec<Bytes>, DeliveryError> {
+		// Get network config for RPC URL
+		let network_config = self
+			.networks
+			.get(&self.config.rollup_chain_id)
+			.ok_or_else(|| {
+				DeliveryError::Network(format!(
+					"No network config for rollup chain {}",
+					self.config.rollup_chain_id
+				))
+			})?;
+
+		let rpc_url = network_config
+			.rpc_urls
+			.first()
+			.and_then(|rpc| rpc.http.as_ref())
+			.ok_or_else(|| {
+				DeliveryError::Network(format!(
+					"No HTTP RPC URL for chain {}",
+					self.config.rollup_chain_id
+				))
+			})?;
+
+		// Create provider with wallet (needed for fill method)
+		// IMPORTANT: Use the same provider for all transactions to ensure correct nonce ordering
+		let wallet = EthereumWallet::from(self.signer.clone());
+		let provider = ProviderBuilder::new().wallet(wallet).connect_http(
+			rpc_url
+				.parse()
+				.map_err(|e| DeliveryError::Network(format!("Invalid RPC URL: {}", e)))?,
 		);
 
-		let has_host_outputs = signed_order
-			.outputs
-			.iter()
-			.any(|output| output.chainId as u64 == self.config.host_chain_id);
+		let mut encoded_txs = Vec::new();
 
-		if !has_host_outputs {
-			tracing::warn!(
-				host_chain_id = self.config.host_chain_id,
-				outputs_count = signed_order.outputs.len(),
-				output_chain_ids = ?signed_order.outputs.iter().map(|o| o.chainId).collect::<Vec<_>>(),
-				"No host chain outputs in order, skipping SignedFill creation"
-			);
-			return Ok(None);
+		// Process each transaction sequentially to ensure correct nonce ordering
+		for mut tx in tx_requests {
+			// Fill out the transaction fields (following SDK pattern)
+			use alloy_network::TransactionBuilder;
+			tx = tx
+				.with_from(self.signer.address())
+				.with_gas_limit(DEFAULT_GAS_LIMIT)
+				.with_max_priority_fee_per_gas(
+					(GWEI_TO_WEI * DEFAULT_PRIORITY_FEE_MULTIPLIER) as u128,
+				);
+
+			// Use provider.fill() to populate remaining fields (nonce, gas price, chain_id, etc.)
+			use alloy_provider::SendableTx;
+			let sendable = provider.fill(tx).await.map_err(|e| {
+				DeliveryError::Network(format!("Failed to fill transaction: {}", e))
+			})?;
+
+			let filled_envelope = match sendable {
+				SendableTx::Envelope(envelope) => envelope,
+				_ => {
+					return Err(DeliveryError::Network(
+						"Expected transaction envelope from provider.fill()".to_string(),
+					))
+				},
+			};
+
+			// Encode the signed transaction to RLP bytes (EIP-2718 format)
+			let encoded = filled_envelope.encoded_2718();
+			encoded_txs.push(Bytes::from(encoded));
 		}
+
+		Ok(encoded_txs)
+	}
+
+	/// Creates SignedFills for all target chains from the order's outputs.
+	///
+	/// This follows the SDK's sign_fills pattern:
+	/// 1. Aggregate orders
+	/// 2. Create UnsignedFill with deadline
+	/// 3. Configure with chain addresses
+	/// 4. Sign for each target chain
+	async fn create_signed_fills(
+		&self,
+		signed_order: &signet_types::SignedOrder,
+	) -> Result<std::collections::HashMap<u64, SignedFill>, DeliveryError> {
+		// Get deadline from the order's permit
+		let deadline = signed_order
+			.permit
+			.permit
+			.deadline
+			.to_string()
+			.parse::<u64>()
+			.map_err(|e| {
+				DeliveryError::Network(format!("Invalid deadline in order permit: {}", e))
+			})?;
 
 		// 1. Create AggregateOrders from the SignedOrder
 		let mut agg_orders = signet_types::AggregateOrders::new();
 		agg_orders.ingest_signed(signed_order);
 
+		// Get all target chain IDs from the order
+		let target_chain_ids: std::collections::HashSet<u64> = signed_order
+			.outputs
+			.iter()
+			.map(|output| output.chainId as u64)
+			.collect();
+
 		tracing::debug!(
 			rollup_chain_id = self.config.rollup_chain_id,
 			host_chain_id = self.config.host_chain_id,
-			"Creating SignedFill for host outputs"
+			target_chain_ids = ?target_chain_ids,
+			deadline = deadline,
+			"Creating SignedFills for all target chains"
 		);
 
-		// 2. Create UnsignedFill and configure with chain info
-		let unsigned_fill = signet_types::UnsignedFill::new(&agg_orders)
-			.with_ru_chain_id(self.config.rollup_chain_id)
-			.with_chain(self.config.host_chain_id, self.config.order_destination_address.into());
+		// 2. Create UnsignedFill with deadline and rollup chain ID
+		let mut unsigned_fill = signet_types::UnsignedFill::new(&agg_orders)
+			.with_deadline(deadline)
+			.with_ru_chain_id(self.config.rollup_chain_id);
 
-		// 3. Sign the fill for the host chain
-		let signed_fill = unsigned_fill
-			.sign_for(self.config.host_chain_id, &self.signer)
+		// 3. Configure with order contract addresses for each chain
+		for chain_id in &target_chain_ids {
+			let order_address = if *chain_id == self.config.rollup_chain_id {
+				self.config.order_origin_address
+			} else if *chain_id == self.config.host_chain_id {
+				self.config.order_destination_address
+			} else {
+				// For other chains, we need to look up the address
+				// For now, we'll skip them
+				tracing::warn!(
+					chain_id = chain_id,
+					"No order contract address configured for chain"
+				);
+				continue;
+			};
+
+			unsigned_fill = unsigned_fill.with_chain(*chain_id, order_address.into());
+		}
+
+		// 4. Sign the fill, producing SignedFills for each target chain
+		let signed_fills = unsigned_fill
+			.sign(&self.signer)
 			.await
-			.map_err(|e| {
-				DeliveryError::Network(format!("Failed to sign fill for host chain: {}", e))
-			})?;
+			.map_err(|e| DeliveryError::Network(format!("Failed to sign fills: {}", e)))?;
 
 		tracing::info!(
-			host_chain_id = self.config.host_chain_id,
-			outputs_count = signed_fill.outputs.len(),
-			"Successfully created SignedFill"
+			signed_fills_count = signed_fills.len(),
+			chain_ids = ?signed_fills.keys().collect::<Vec<_>>(),
+			"Successfully created SignedFills for all target chains"
 		);
 
-		Ok(Some(signed_fill))
+		Ok(signed_fills)
 	}
 }
 
@@ -256,14 +392,32 @@ impl ConfigSchema for SignetBundleDeliverySchema {
 			// Required fields
 			vec![
 				Field::new("chain_name", FieldType::String),
-				Field::new("rollup_chain_id", FieldType::Integer { min: Some(1), max: None }),
-				Field::new("host_chain_id", FieldType::Integer { min: Some(1), max: None }),
+				Field::new(
+					"rollup_chain_id",
+					FieldType::Integer {
+						min: Some(1),
+						max: None,
+					},
+				),
+				Field::new(
+					"host_chain_id",
+					FieldType::Integer {
+						min: Some(1),
+						max: None,
+					},
+				),
 				Field::new("order_origin_address", FieldType::String),
 				Field::new("order_destination_address", FieldType::String),
 				Field::new("filler_recipient", FieldType::String),
 			],
 			// Optional fields
-			vec![Field::new("target_block", FieldType::Integer { min: Some(1), max: None })],
+			vec![Field::new(
+				"target_block",
+				FieldType::Integer {
+					min: Some(1),
+					max: None,
+				},
+			)],
 		);
 
 		schema.validate(config)
@@ -277,19 +431,55 @@ impl DeliveryInterface for SignetBundleDelivery {
 	}
 
 	async fn submit(&self, tx: SolverTransaction) -> Result<TransactionHash, DeliveryError> {
-		// Create bundle from transaction
-		let bundle = self.create_bundle(&tx).await?;
+		// Create bundles from transaction
+		let bundles = self.create_bundles(&tx).await?;
 
-		// Submit bundle to cache
-		let response = self
-			.cache_client
-			.forward_bundle(bundle)
-			.await
-			.map_err(|e| DeliveryError::Network(format!("Failed to submit bundle: {}", e)))?;
+		let mut last_bundle_id = String::new();
+		let bundles_count = bundles.len();
 
-		// Return bundle ID as transaction hash
-		// Note: This is not a traditional transaction hash, but a bundle UUID
-		let bundle_id_bytes = response.id.as_bytes().to_vec();
+		tracing::info!(
+			bundles_count = bundles_count,
+			"Created {} bundles targeting subsequent blocks. Submitting to cache.",
+			bundles_count
+		);
+
+		// 2. 생성된 모든 번들을 캐시에 순차적으로 제출합니다.
+		for (i, bundle) in bundles.into_iter().enumerate() {
+			let block_number = bundle.bundle.block_number;
+
+			tracing::debug!(
+				attempt = i + 1,
+				block_number = block_number,
+				txs_count = bundle.bundle.txs.len(),
+				has_host_fills = bundle.host_fills.is_some(),
+				"Submitting bundle to Signet cache"
+			);
+
+			// Submit bundle to cache
+			let response = self
+				.cache_client
+				.forward_bundle(bundle)
+				.await
+				.map_err(|e| {
+					let error_msg =
+						format!("Failed to submit bundle for block {}: {}", block_number, e);
+					tracing::error!(
+						error = %e,
+						"Bundle submission failed"
+					);
+					return DeliveryError::Network(error_msg);
+				})?;
+
+			last_bundle_id = response.id.to_string();
+			tracing::info!(
+				bundle_id = %last_bundle_id,
+				block_number = block_number,
+				"Bundle successfully submitted to cache"
+			);
+		}
+
+		// 마지막으로 제출된 번들의 ID를 반환합니다.
+		let bundle_id_bytes = last_bundle_id.as_bytes().to_vec();
 		Ok(TransactionHash(bundle_id_bytes))
 	}
 
@@ -396,7 +586,9 @@ impl DeliveryInterface for SignetBundleDelivery {
 
 	async fn eth_call(&self, _tx: SolverTransaction) -> Result<Bytes, DeliveryError> {
 		// TODO: Implement contract calls if needed
-		Err(DeliveryError::Network("Contract calls not yet implemented for Signet".to_string()))
+		Err(DeliveryError::Network(
+			"Contract calls not yet implemented for Signet".to_string(),
+		))
 	}
 }
 
@@ -409,7 +601,10 @@ pub fn create_delivery(
 ) -> Result<Box<dyn DeliveryInterface>, DeliveryError> {
 	// Validate configuration first
 	SignetBundleDeliverySchema::validate_config(config).map_err(|e| {
-		DeliveryError::Network(format!("Invalid Signet bundle delivery configuration: {}", e))
+		DeliveryError::Network(format!(
+			"Invalid Signet bundle delivery configuration: {}",
+			e
+		))
 	})?;
 
 	// Parse chain_name (required)
@@ -420,7 +615,10 @@ pub fn create_delivery(
 		.to_string();
 
 	// Parse target_block (optional)
-	let target_block = config.get("target_block").and_then(|v| v.as_integer()).map(|v| v as u64);
+	let target_block = config
+		.get("target_block")
+		.and_then(|v| v.as_integer())
+		.map(|v| v as u64);
 
 	// Parse rollup_chain_id (required)
 	let rollup_chain_id = config
@@ -573,8 +771,9 @@ mod tests {
 
 		let networks = create_test_networks();
 		// Use a valid hex private key for testing
-		let default_key =
-			solver_types::SecretString::from("0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80");
+		let default_key = solver_types::SecretString::from(
+			"0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
+		);
 		let network_keys = HashMap::new();
 
 		let result = create_delivery(&config, &networks, &default_key, &network_keys);

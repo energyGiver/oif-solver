@@ -25,7 +25,8 @@ use async_trait::async_trait;
 use signet_tx_cache::client::TxCache;
 use signet_types::SignedOrder;
 use solver_types::{
-	current_timestamp, ConfigSchema, Field, FieldType, Intent, IntentMetadata, NetworksConfig, Schema,
+	current_timestamp, ConfigSchema, Field, FieldType, Intent, IntentMetadata, NetworksConfig,
+	Schema,
 };
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -65,7 +66,10 @@ pub struct SignetCacheDiscovery {
 
 impl SignetCacheDiscovery {
 	/// Creates a new Signet cache discovery instance.
-	pub fn new(config: SignetCacheConfig, networks: NetworksConfig) -> Result<Self, DiscoveryError> {
+	pub fn new(
+		config: SignetCacheConfig,
+		networks: NetworksConfig,
+	) -> Result<Self, DiscoveryError> {
 		// Validate chain name
 		if config.chain_name.is_empty() {
 			return Err(DiscoveryError::ValidationError(
@@ -74,13 +78,13 @@ impl SignetCacheDiscovery {
 		}
 
 		// Validate polling interval
-		if config.polling_interval_secs == 0 || config.polling_interval_secs > MAX_POLLING_INTERVAL_SECS {
-			return Err(DiscoveryError::ValidationError(
-				format!(
-					"polling_interval_secs must be between 1 and {}",
-					MAX_POLLING_INTERVAL_SECS
-				),
-			));
+		if config.polling_interval_secs == 0
+			|| config.polling_interval_secs > MAX_POLLING_INTERVAL_SECS
+		{
+			return Err(DiscoveryError::ValidationError(format!(
+				"polling_interval_secs must be between 1 and {}",
+				MAX_POLLING_INTERVAL_SECS
+			)));
 		}
 
 		Ok(Self {
@@ -95,15 +99,11 @@ impl SignetCacheDiscovery {
 	/// Converts a Signed Order to an Intent.
 	fn order_to_intent(order: &SignedOrder) -> Result<Intent, DiscoveryError> {
 		// Generate a simple ID from permit nonce
-		let id = format!(
-			"signet-{}",
-			order.permit.permit.nonce
-		);
+		let id = format!("signet-{}", order.permit.permit.nonce);
 
 		// Create intent with Permit2 data (SignedOrder)
-		let data = serde_json::to_value(order).map_err(|e| {
-			DiscoveryError::ParseError(format!("Failed to serialize order: {}", e))
-		})?;
+		let data = serde_json::to_value(order)
+			.map_err(|e| DiscoveryError::ParseError(format!("Failed to serialize order: {}", e)))?;
 
 		// Store SignedOrder JSON as order_bytes
 		// The Signet order implementation will extract it from intent_data
@@ -165,7 +165,7 @@ impl SignetCacheDiscovery {
 				Err(e) => {
 					tracing::error!("Failed to create cache client: {}", e);
 					return;
-				}
+				},
 			}
 		};
 
@@ -486,7 +486,10 @@ mod tests {
 		// Verify data can be deserialized back to SignedOrder
 		let deserialized: SignedOrder = serde_json::from_value(intent.data).unwrap();
 		assert_eq!(deserialized.permit.owner, test_address);
-		assert_eq!(deserialized.permit.permit.nonce, alloy_primitives::U256::from(12345));
+		assert_eq!(
+			deserialized.permit.permit.nonce,
+			alloy_primitives::U256::from(12345)
+		);
 	}
 
 	#[test]
@@ -523,7 +526,9 @@ mod tests {
 		let order = create_test_order(test_address, 1);
 
 		// Test with uppercase address in whitelist
-		let whitelist = Some(vec!["0x21C10426FA5101AB80042AC6CF89F65A7D9E7BCB".to_string()]);
+		let whitelist = Some(vec![
+			"0x21C10426FA5101AB80042AC6CF89F65A7D9E7BCB".to_string()
+		]);
 
 		assert!(SignetCacheDiscovery::matches_whitelist(&order, &whitelist));
 	}
