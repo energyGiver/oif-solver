@@ -173,6 +173,10 @@ impl SignetCacheDiscovery {
 			tokio::time::interval(std::time::Duration::from_secs(config.polling_interval_secs));
 		interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
+		// Track processed order IDs to avoid re-sending same orders
+		// Signet cache may return already-processed orders until they're fulfilled on-chain
+		let mut processed_orders = std::collections::HashSet::new();
+
 		loop {
 			tokio::select! {
 				_ = interval.tick() => {
@@ -181,6 +185,14 @@ impl SignetCacheDiscovery {
 							tracing::debug!("Fetched {} orders from Signet cache", orders.len());
 
 							for order in orders {
+								// Generate intent ID to check if already processed
+								let intent_id = format!("signet-{}", order.permit.permit.nonce);
+
+								// Skip if already processed
+								if processed_orders.contains(&intent_id) {
+									continue;
+								}
+
 								// Apply whitelist filter
 								if !Self::matches_whitelist(&order, &config.whitelist_addresses) {
 									continue;
@@ -191,6 +203,10 @@ impl SignetCacheDiscovery {
 									Ok(intent) => {
 										if let Err(e) = sender.send(intent) {
 											tracing::error!("Failed to send intent: {}", e);
+										} else {
+											// Mark as processed to avoid re-sending
+											processed_orders.insert(intent_id);
+											tracing::debug!("Marked order as processed: {}", processed_orders.len());
 										}
 									},
 									Err(e) => {
