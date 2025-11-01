@@ -5017,7 +5017,7 @@ dependencies = [
 [[package]]
 name = "signet-bundle"
 version = "0.12.0"
-source = "git+https://github.com/init4tech/signet-sdk?branch=main#09b202664d97d1c7bcca56b229c34e4427fe9420"
+source = "git+https://github.com/init4tech/signet-sdk?branch=main#7f439ae98645e2538ce45c58fe3e75f785ed0e75"
 dependencies = [
  "alloy",
  "serde",
@@ -5032,7 +5032,7 @@ dependencies = [
 [[package]]
 name = "signet-constants"
 version = "0.12.0"
-source = "git+https://github.com/init4tech/signet-sdk?branch=main#09b202664d97d1c7bcca56b229c34e4427fe9420"
+source = "git+https://github.com/init4tech/signet-sdk?branch=main#7f439ae98645e2538ce45c58fe3e75f785ed0e75"
 dependencies = [
  "alloy",
  "serde",
@@ -5043,7 +5043,7 @@ dependencies = [
 [[package]]
 name = "signet-evm"
 version = "0.12.0"
-source = "git+https://github.com/init4tech/signet-sdk?branch=main#09b202664d97d1c7bcca56b229c34e4427fe9420"
+source = "git+https://github.com/init4tech/signet-sdk?branch=main#7f439ae98645e2538ce45c58fe3e75f785ed0e75"
 dependencies = [
  "alloy",
  "signet-extract",
@@ -5058,7 +5058,7 @@ dependencies = [
 [[package]]
 name = "signet-extract"
 version = "0.12.0"
-source = "git+https://github.com/init4tech/signet-sdk?branch=main#09b202664d97d1c7bcca56b229c34e4427fe9420"
+source = "git+https://github.com/init4tech/signet-sdk?branch=main#7f439ae98645e2538ce45c58fe3e75f785ed0e75"
 dependencies = [
  "alloy",
  "signet-types",
@@ -5069,7 +5069,7 @@ dependencies = [
 [[package]]
 name = "signet-journal"
 version = "0.12.0"
-source = "git+https://github.com/init4tech/signet-sdk?branch=main#09b202664d97d1c7bcca56b229c34e4427fe9420"
+source = "git+https://github.com/init4tech/signet-sdk?branch=main#7f439ae98645e2538ce45c58fe3e75f785ed0e75"
 dependencies = [
  "alloy",
  "futures-util",
@@ -5080,7 +5080,7 @@ dependencies = [
 [[package]]
 name = "signet-tx-cache"
 version = "0.12.0"
-source = "git+https://github.com/init4tech/signet-sdk?branch=main#09b202664d97d1c7bcca56b229c34e4427fe9420"
+source = "git+https://github.com/init4tech/signet-sdk?branch=main#7f439ae98645e2538ce45c58fe3e75f785ed0e75"
 dependencies = [
  "alloy",
  "eyre",
@@ -5096,7 +5096,7 @@ dependencies = [
 [[package]]
 name = "signet-types"
 version = "0.12.0"
-source = "git+https://github.com/init4tech/signet-sdk?branch=main#09b202664d97d1c7bcca56b229c34e4427fe9420"
+source = "git+https://github.com/init4tech/signet-sdk?branch=main#7f439ae98645e2538ce45c58fe3e75f785ed0e75"
 dependencies = [
  "alloy",
  "chrono",
@@ -5109,7 +5109,7 @@ dependencies = [
 [[package]]
 name = "signet-zenith"
 version = "0.12.0"
-source = "git+https://github.com/init4tech/signet-sdk?branch=main#09b202664d97d1c7bcca56b229c34e4427fe9420"
+source = "git+https://github.com/init4tech/signet-sdk?branch=main#7f439ae98645e2538ce45c58fe3e75f785ed0e75"
 dependencies = [
  "alloy",
  "alloy-core",
